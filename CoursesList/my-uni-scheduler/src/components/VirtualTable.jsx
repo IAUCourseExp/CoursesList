@@ -63,7 +63,7 @@ const VirtualTable = ({ data, columns, onSort, sortConfig }) => {
   }, [data]);
 
   return (
-    <div className="rounded-xl overflow-hidden border border-gray-300 shadow-2xl">
+    <div className="h-full w-full rounded-xl overflow-hidden">
       <div
         ref={parentRef}
         onScroll={handleScroll}
