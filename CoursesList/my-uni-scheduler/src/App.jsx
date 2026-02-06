@@ -19,7 +19,9 @@ function App() {
   []);
   
   useEffect(() => {
-    worker.postMessage({ type: 'LOAD_CSV' });
+    const dataUrl = import.meta.env.BASE_URL + 'data.csv';
+
+    worker.postMessage({ type: 'LOAD_CSV', url: dataUrl });
 
     worker.onmessage = (e) => {
       const { type, payload } = e.data;
@@ -45,14 +47,22 @@ function App() {
 
 
   useEffect(() => {
-    if (debouncedTerm.trim() !== "") {
+    if (debouncedTerm.trim() === "") {
+      setIsLoading(true);
+      worker.postMessage({ type: 'LOAD_CSV', url: import.meta.env.BASE_URL + 'data.csv' });
+    } else {
       setIsLoading(true);
       worker.postMessage({ type: 'SEARCH', payload: debouncedTerm });
     }
   }, [debouncedTerm, worker]);
- 
+
   const handleSearch = (e) => {
-    setSearchTerm(e.target.value);
+    const value = e.target.value;
+    setSearchTerm(value);
+    
+    if (value === "") {
+      setDebouncedTerm("");
+    }
   };
 
 const handleSort = (columnName) => {
@@ -67,9 +77,11 @@ const handleSort = (columnName) => {
 };
 
   return (
-    <div className="h-screen bg-gray-50 w-full font-vazir overflow-hidden flex flex-col">
+    /* h-screen و overflow-hidden باعث می‌شود صفحه ثابت بماند و اسکرول کلی نخورد */
+    <div className="h-screen bg-gray-50 w-full font-vazir flex flex-col overflow-hidden">
       
-      <header className="sticky top-0 z-30 backdrop-blur-md bg-white/80 border-b border-gray-200 pb-4 pt-4 shadow-sm">
+      {/* هدر در جای خود ثابت می‌ماند */}
+      <header className="flex-none backdrop-blur-md bg-white/80 border-b border-gray-200 pb-4 pt-4 shadow-sm z-30">
         <div className="max-w-6xl mx-auto px-4">
           <div className="flex flex-col md:flex-row items-center justify-between gap-6">
             
@@ -77,7 +89,7 @@ const handleSort = (columnName) => {
               <h1 className="text-2xl font-black text-blue-900 mb-1">لیست دروس دانشگاه آزاد شیراز</h1>
               
               <a 
-                href="/data.csv"
+                href={`${import.meta.env.BASE_URL}data.csv`}
                 download={`لیست_دروس_${LAST_UPDATE.replace(/ /g, '_')}.csv`}
                 className="mt-2 inline-flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-lg transition-all shadow-md hover:shadow-green-200"
               >
@@ -120,7 +132,7 @@ const handleSort = (columnName) => {
                 </ul>
               </div>
             </div>
- 
+
             <div className="w-full max-w-md relative group">
               <input
                 id="search-courses"
@@ -134,27 +146,35 @@ const handleSort = (columnName) => {
                 🔍
               </div>
             </div>
- 
+
           </div>
         </div>
       </header>
-   
-      <div className="w-full px-2 md:px-4 mt-4">
-        <main className="bg-white shadow-2xl rounded-3xl overflow-hidden w-full border border-gray-200">
+    
+      {/* flex-1 باعث می‌شود این بخش تمام فضای باقی‌مانده را پر کند */}
+      <main className="flex-1 overflow-hidden w-full px-2 md:px-4 py-2 relative">
+        <div className="h-full bg-white shadow-2xl rounded-3xl w-full border border-gray-200 overflow-hidden relative">
           {isLoading ? (
-            <div className="flex flex-col items-center justify-center py-40">
+            <div className="flex flex-col items-center justify-center h-full">
               <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-600"></div>
               <p className="mt-6 text-gray-500 text-lg animate-pulse text-center">در حال بارگذاری لیست دروس...</p>
             </div>
           ) : (
+            /* VirtualTable حالا در یک کانتینر با ارتفاع مشخص قرار دارد */
             <VirtualTable data={data} columns={columns} onSort={handleSort} sortConfig={sortConfig} />
           )}
-        </main>
+        </div>
+      </main>
 
-        <footer className="py-4 text-center text-red-600 font-bold text-[11px] animate-pulse">
+      {/* فوتر در پایین چسبیده، بزرگتر و واضح */}
+      <footer className="flex-none py-4 bg-white border-t border-gray-100 text-center z-10">
+        <div className="text-red-600 font-bold text-sm md:text-base animate-pulse">
           تعداد کل ردیف‌ها: {data.length.toLocaleString()} | طراحی شده برای دانشجویان آزاد شیراز
-        </footer>
-      </div>
+        </div>
+        <div className="text-[10px] text-gray-400 mt-1 font-medium">
+          برای مشاهده بهتر از نسخه دسکتاپ استفاده کنید
+        </div>
+      </footer>
     </div>
   );
 }

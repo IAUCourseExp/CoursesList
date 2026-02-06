@@ -67,12 +67,12 @@ const VirtualTable = ({ data, columns, onSort, sortConfig }) => {
       <div
         ref={parentRef}
         onScroll={handleScroll}
-        className="h-[calc(100vh-250px)] w-full overflow-auto bg-white custom-scrollbar"
+        className="h-full w-full overflow-auto bg-white custom-scrollbar"
         style={{ direction: 'ltr' }}
       >
         <div
           style={{
-            height: `${rowVirtualizer.getTotalSize()}px`,
+            height: `${rowVirtualizer.getTotalSize() + 56}px`,
             width: '100%',
             minWidth: `${minTableWidth}px`,
             position: 'relative',
@@ -116,6 +116,7 @@ const VirtualTable = ({ data, columns, onSort, sortConfig }) => {
 
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const row = data[virtualRow.index];
+            const headerHeight = 56;
             return (
               <div
                 key={virtualRow.key}
@@ -124,7 +125,7 @@ const VirtualTable = ({ data, columns, onSort, sortConfig }) => {
                   hover:bg-blue-100`}
                 style={{
                   height: `${virtualRow.size}px`,
-                  transform: `translateY(${virtualRow.start}px)`,
+                  transform: `translateY(${virtualRow.start + headerHeight}px)`,
                 }}
               >
                 {columns.map((col) => (

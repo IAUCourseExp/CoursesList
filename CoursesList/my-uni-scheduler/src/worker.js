@@ -8,7 +8,11 @@ self.onmessage = async (e) => {
 
   if (type === 'LOAD_CSV') {
     try {
-      const response = await fetch('/data.csv');
+      // استفاده از آدرسی که از سمت App.jsx فرستاده شده است
+      // اگر آدرسی نبود، به عنوان رزرو از '/data.csv' استفاده می‌کند
+      const fileUrl = e.data.url || '/data.csv'; 
+      
+      const response = await fetch(fileUrl);
 
       const csvString = await response.text(); 
 
@@ -32,22 +36,30 @@ self.onmessage = async (e) => {
   }
 
   if (type === 'SEARCH') {
-    const searchTerm = payload.toLowerCase();
+    const query = payload.trim();
     
-    if (!searchTerm) {
+    // تابعی برای یکسان‌سازی حروف فارسی (ی و ک)
+    const normalizeFarsi = (text) => {
+      if (!text) return "";
+      return String(text)
+        .replace(/ی/g, "ی").replace(/ي/g, "ی") // یکسان‌سازی ی
+        .replace(/ک/g, "ک").replace(/ك/g, "ک") // یکسان‌سازی ک
+        .toLowerCase();
+    };
 
-      self.postMessage({ type: 'SEARCH_RESULTS', payload: { payload: cachedData } });
-      return;
-    }
+    const normalizedQuery = normalizeFarsi(query);
 
-    const filtered = cachedData.filter(row => 
-      Object.values(row).some(value => 
-        String(value).toLowerCase().includes(searchTerm)
-      )
-    );
+    const results = cachedData.filter(row => {
+      return Object.values(row).some(value => {
+        const normalizedValue = normalizeFarsi(value);
+        return normalizedValue.includes(normalizedQuery);
+      });
+    });
 
-
-    self.postMessage({ type: 'SEARCH_RESULTS', payload: { payload: filtered } });
+    self.postMessage({
+      type: 'SEARCH_RESULTS',
+      payload: { payload: results }
+    });
   }
 
   if (type === 'SORT') {
