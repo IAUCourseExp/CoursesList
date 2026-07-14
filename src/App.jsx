@@ -4,9 +4,9 @@ import { useState, useEffect, useMemo } from 'react';
 function App() {
   // ---------------------------------------------------------
   // تاریخ آخرین آپدیت را اینجا تغییر دهید:
-  const LAST_UPDATE = "19 تیر 1405"; 
+  const LAST_UPDATE = "23 تیر 1405"; 
   // ---------------------------------------------------------
-  
+   
   const [data, setData] = useState([]);
   const [columns, setColumns] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
