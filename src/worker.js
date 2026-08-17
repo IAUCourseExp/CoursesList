@@ -1,91 +1,163 @@
 import Papa from 'papaparse';
 
-let cachedData = [];
+let masterData = [];
+let columns = [];
+let facetCache = {};
 
+const normalizeFarsi = (text) => {
+  if (text === null || text === undefined) return '';
+  return String(text)
+    .replace(/\u064A/g, '\u06CC')
+    .replace(/\u0643/g, '\u06A9')
+    .toLowerCase()
+    .trim();
+};
+
+const normCell = (value) => {
+  const s = value === null || value === undefined ? '' : String(value).trim();
+  return s === '' ? '(خالی)' : normalizeFarsi(s);
+};
+
+const displayCell = (value) => {
+  const s = value === null || value === undefined ? '' : String(value).trim();
+  return s === '' ? '(خالی)' : s;
+};
+
+const parseCsv = (csvString) =>
+  new Promise((resolve) => {
+    Papa.parse(csvString, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => resolve(results),
+    });
+  });
+
+const replaceData = (parsed) => {
+  masterData = parsed.data || [];
+  columns = parsed.meta?.fields || [];
+  facetCache = {};
+};
+
+const applyQuery = ({ search, filters, sort }) => {
+  let rows = masterData;
+
+  const q = normalizeFarsi(search || '');
+  if (q) {
+    rows = rows.filter((row) =>
+      Object.values(row).some((v) => normalizeFarsi(v).includes(q))
+    );
+  }
+
+  const activeFilters = Object.entries(filters || {}).filter(
+    ([, vals]) => Array.isArray(vals) && vals.length > 0
+  );
+  if (activeFilters.length) {
+    const allowed = activeFilters.map(
+      ([col, vals]) => [col, new Set(vals.map(normalizeFarsi))]
+    );
+    rows = rows.filter((row) =>
+      allowed.every(([col, set]) => set.has(normCell(row[col])))
+    );
+  }
+
+  if (sort && sort.column) {
+    const { column, direction } = sort;
+    rows = [...rows].sort((a, b) => {
+      const va = a[column] ?? '';
+      const vb = b[column] ?? '';
+      const na = parseFloat(va);
+      const nb = parseFloat(vb);
+      let cmp;
+      if (!isNaN(na) && !isNaN(nb) && String(va).trim() !== '' && String(vb).trim() !== '') {
+        cmp = na - nb;
+      } else {
+        cmp = String(va).localeCompare(String(vb), 'fa');
+      }
+      return direction === 'asc' ? cmp : -cmp;
+    });
+  }
+
+  return rows;
+};
+
+const buildFacets = (column) => {
+  if (facetCache[column]) return facetCache[column];
+
+  const counts = new Map();
+  for (const row of masterData) {
+    const v = displayCell(row[column]);
+    counts.set(v, (counts.get(v) || 0) + 1);
+  }
+  const values = [...counts.entries()].map(([value, count]) => ({ value, count }));
+  values.sort(
+    (a, b) => b.count - a.count || String(a.value).localeCompare(String(b.value), 'fa')
+  );
+  facetCache[column] = values;
+  return values;
+};
 
 self.onmessage = async (e) => {
   const { type, payload } = e.data;
 
-  if (type === 'LOAD_CSV') {
-    try {
-      // استفاده از آدرسی که از سمت App.jsx فرستاده شده است
-      // اگر آدرسی نبود، به عنوان رزرو از '/data.csv' استفاده می‌کند
-      const fileUrl = e.data.url || '/data.csv'; 
-      
-      const response = await fetch(fileUrl);
+  try {
+    if (type === 'INIT') {
+      const { url, cachedText } = payload || {};
 
-      const csvString = await response.text(); 
+      if (cachedText) {
+        replaceData(await parseCsv(cachedText));
+        self.postMessage({
+          type: 'DATA_LOADED',
+          payload: { source: 'cache', changed: false, data: masterData, columns },
+        });
 
-      Papa.parse(csvString, {
-        header: true,
-        skipEmptyLines: true,
-        complete: (results) => {
-          cachedData = results.data;
+        const res = await fetch(url, { cache: 'no-cache' });
+        const text = await res.text();
+        if (text === cachedText) {
+          self.postMessage({ type: 'STATUS', payload: { fresh: true } });
+        } else {
+          replaceData(await parseCsv(text));
           self.postMessage({
             type: 'DATA_LOADED',
             payload: {
-              data: cachedData,
-              columns: results.meta.fields
-            }
+              source: 'network',
+              changed: true,
+              data: masterData,
+              columns,
+              csvText: text,
+            },
           });
         }
-      });
-    } catch (error) {
-      console.error('خطا در بارگذاری:', error);
-    }
-  }
-
-  if (type === 'SEARCH') {
-    const query = payload.trim();
-    
-    // تابعی برای یکسان‌سازی حروف فارسی (ی و ک)
-    const normalizeFarsi = (text) => {
-      if (!text) return "";
-      return String(text)
-        .replace(/ی/g, "ی").replace(/ي/g, "ی") // یکسان‌سازی ی
-        .replace(/ک/g, "ک").replace(/ك/g, "ک") // یکسان‌سازی ک
-        .toLowerCase();
-    };
-
-    const normalizedQuery = normalizeFarsi(query);
-
-    const results = cachedData.filter(row => {
-      return Object.values(row).some(value => {
-        const normalizedValue = normalizeFarsi(value);
-        return normalizedValue.includes(normalizedQuery);
-      });
-    });
-
-    self.postMessage({
-      type: 'SEARCH_RESULTS',
-      payload: { payload: results }
-    });
-  }
-
-  if (type === 'SORT') {
-    const { column, direction } = payload;
-    
-
-    const sortedData = [...cachedData].sort((a, b) => {
-      let valA = a[column] || "";
-      let valB = b[column] || "";
-
-
-      const isNumA = !isNaN(parseFloat(valA)) && isFinite(valA);
-      const isNumB = !isNaN(parseFloat(valB)) && isFinite(valB);
-
-      if (isNumA && isNumB) {
-
-        return direction === 'asc' ? valA - valB : valB - valA;
       } else {
-
-        return direction === 'asc' 
-          ? String(valA).localeCompare(String(valB), 'fa')
-          : String(valB).localeCompare(String(valA), 'fa');
+        const res = await fetch(url, { cache: 'no-cache' });
+        const text = await res.text();
+        replaceData(await parseCsv(text));
+        self.postMessage({
+          type: 'DATA_LOADED',
+          payload: {
+            source: 'network',
+            changed: false,
+            data: masterData,
+            columns,
+            csvText: text,
+          },
+        });
       }
-    });
+    }
 
+    if (type === 'QUERY') {
+      self.postMessage({ type: 'QUERY_RESULTS', payload: { rows: applyQuery(payload || {}) } });
+    }
 
-    self.postMessage({ type: 'SEARCH_RESULTS', payload: { payload: sortedData } });
+    if (type === 'FACETS') {
+      const column = payload?.column;
+      if (columns.includes(column)) {
+        self.postMessage({
+          type: 'FACETS_RESULT',
+          payload: { column, values: buildFacets(column) },
+        });
+      }
+    }
+  } catch (err) {
+    self.postMessage({ type: 'ERROR', payload: { message: String(err?.message || err) } });
   }
 };
