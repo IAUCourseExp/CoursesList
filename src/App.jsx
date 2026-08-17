@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 function App() {
   // ---------------------------------------------------------
   // تاریخ آخرین آپدیت را اینجا تغییر دهید:
-  const LAST_UPDATE = "22 مرداد 1405"; 
+  const LAST_UPDATE = "26 مرداد 1405"; 
   // ---------------------------------------------------------
    
   const [data, setData] = useState([]);
