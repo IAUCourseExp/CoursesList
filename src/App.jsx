@@ -1,3 +1,5 @@
+const LAST_UPDATE = import.meta.env.VITE_BUILD_TIME || 'تاریخ نامشخص';
+
 import VirtualTable from './components/VirtualTable';
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 

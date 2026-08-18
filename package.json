@@ -10,17 +10,20 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "deploy-all": "git add . && git commit -m 'update' && git push origin main && npm run build && npx gh-pages -d dist" 
+    "deploy-all": "git add . && git commit -m 'update' && git push origin main && npm run generate-time && npm run build && npx gh-pages -d dist",
+    "generate-time": "node scripts/generate-build-time.js"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.18",
     "@tanstack/react-virtual": "^3.13.18",
     "papaparse": "^5.5.3",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "timezone": "^1.0.23"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@types/node": "^26.2.0",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
