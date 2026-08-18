@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallba
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 const DEFAULT_WIDTHS = {
+  '_star': 50,
   'نام درس': 300,
   'زمانبندي تشکيل کلاس': 400,
   'مکان برگزاري': 350,
@@ -36,7 +37,10 @@ const DEFAULT_WIDTHS_BY_NORM = Object.fromEntries(
   Object.entries(DEFAULT_WIDTHS).map(([k, v]) => [normHeader(k), v])
 );
 
-const defaultWidth = (colName) => DEFAULT_WIDTHS_BY_NORM[normHeader(colName)] ?? 180;
+const defaultWidth = (colName) => {
+  if (colName === '_star') return 50;
+  return DEFAULT_WIDTHS_BY_NORM[normHeader(colName)] ?? 180;
+};
 
 const FunnelIcon = ({ className }) => (
   <svg
@@ -67,11 +71,14 @@ const VirtualTable = ({
   onColumnResize,
   onWidthsCommit,
   onColumnReset,
+  bookmarks = [],
+  onToggleBookmark = () => {},
 }) => {
   const parentRef = useRef();
   const [openFacet, setOpenFacet] = useState(null);
   const [facetSearch, setFacetSearch] = useState('');
   const [draggingCol, setDraggingCol] = useState(null);
+  const bookmarkSet = useMemo(() => new Set(bookmarks), [bookmarks]);
 
   const widthOf = useCallback(
     (col) => colWidths[col] ?? defaultWidth(col),
@@ -120,6 +127,12 @@ const VirtualTable = ({
       }
     }
   }, [data]);
+
+
+  const getRowKey = useCallback((row) => {
+    return row['كد ارائه كلاس درس'] || row['كد درس'] || row['نام درس'] + Math.random();
+  }, []);
+
 
   const startResize = (e, col) => {
     e.preventDefault();
@@ -220,7 +233,7 @@ const VirtualTable = ({
               value={facetSearch}
               onChange={(e) => setFacetSearch(e.target.value)}
               placeholder="جستجو در مقادیر..."
-              className="w-full text-xs px-3 py-2 pr-8 rounded-lg bg-slate-100/80 border border-transparent focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-colors text-right"
+              className="w-full text-xs px-3 py-2 pr-8 rounded-lg bg-slate-100/80 border border-transparent focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-colors text-right text-slate-800 placeholder:text-slate-400"
             />
             <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-400 select-none pointer-events-none">
               🔍
@@ -301,7 +314,19 @@ const VirtualTable = ({
           }}
         >
           <div className="sticky top-0 z-30 flex h-20 bg-slate-900/95 backdrop-blur text-white shadow-lg shadow-slate-900/20 w-full">
-            {[...columns].reverse().map((col) => {
+            {['_star', ...columns].reverse().map((col) => {
+              if (col === '_star') {
+                return (
+                  <div
+                    key={col}
+                    style={{ width: '50px', flexShrink: 0, direction: 'rtl' }}
+                    className="relative border-l border-slate-700/60 flex items-center justify-center bg-slate-900/95 px-1"
+                  >
+                    <span className="text-white text-sm">⭐</span>
+                  </div>
+                );
+              }
+              const isStarCol = col === '_star';
               const isActiveFilter = filters[col]?.length > 0;
               return (
                 <div
@@ -382,17 +407,44 @@ const VirtualTable = ({
                   transform: `translateY(${virtualRow.start + HEADER_HEIGHT}px)`,
                 }}
               >
-                {[...columns].reverse().map((col) => (
-                  <div
-                    key={col}
-                    style={cellStyle(col)}
-                    className="px-3 md:px-4 text-[12px] md:text-[13px] text-slate-600 font-medium flex items-center justify-center text-center border-l border-slate-100/80 last:border-l-0 overflow-hidden"
-                  >
-                    <span className="break-words w-full leading-relaxed block overflow-hidden whitespace-normal">
-                      {row[col] || '---'}
-                    </span>
-                  </div>
-                ))}
+                {['_star', ...columns].reverse().map((col) => {
+                  if (col === '_star') {
+                    const key = getRowKey(row);
+                    const isBookmarked = bookmarkSet.has(key);
+                    return (
+                      <div
+                        key={col}
+                        style={{ width: '50px', flexShrink: 0, direction: 'rtl' }}
+                        className="px-1 flex items-center justify-center border-l border-slate-100/80 last:border-l-0"
+                      >
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleBookmark(key);
+                          }}
+                          className={`text-xl transition-all transform hover:scale-125 ${
+                            isBookmarked ? 'text-red-500' : 'text-slate-300 hover:text-red-300'
+                          }`}
+                          title={isBookmarked ? 'حذف از علاقه‌مندی‌ها' : 'افزودن به علاقه‌مندی‌ها'}
+                        >
+                          {isBookmarked ? '❤️' : '🤍'}
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div
+                      key={col}
+                      style={cellStyle(col)}
+                      className="px-3 md:px-4 text-[12px] md:text-[13px] text-slate-600 font-medium flex items-center justify-center text-center border-l border-slate-100/80 last:border-l-0 overflow-hidden"
+                    >
+                      <span className="break-words w-full leading-relaxed block overflow-hidden whitespace-normal">
+                        {row[col] || '---'}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             );
           })}

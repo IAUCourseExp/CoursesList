@@ -5,6 +5,7 @@ const LAST_UPDATE = import.meta.env.VITE_BUILD_TIME || 'تاریخ نامشخص'
 
 const CACHE_KEY = 'usc.cache.v1';
 const WIDTHS_KEY = 'usc.colwidths.v1';
+const BOOKMARKS_KEY = 'usc.bookmarks.v1';
 
 function readJson(key) {
   try {
@@ -75,28 +76,117 @@ const ChannelsPopover = ({ triggerRef, onClose }) => {
   );
 };
 
+
+const getInitialStateFromURL = () => {
+  const params = new URLSearchParams(window.location.search);
+  
+  const q = params.get('q') || '';
+  
+  const sortCol = params.get('sort') || null;
+  const sortDir = params.get('dir') || 'asc';
+  const sortConfig = sortCol ? { column: sortCol, direction: sortDir } : { column: null, direction: 'asc' };
+  
+  let filters = {};
+  try {
+    const f = params.get('f');
+    if (f) {
+      filters = JSON.parse(decodeURIComponent(f));
+      Object.keys(filters).forEach(key => {
+        if (!Array.isArray(filters[key])) filters[key] = [filters[key]];
+      });
+    }
+  } catch (e) {
+    console.warn('خطا در خواندن فیلترهای URL:', e);
+    filters = {};
+  }
+  
+  return { q, sortConfig, filters };
+};
+
+const updateURL = (search, filters, sortConfig) => {
+  const params = new URLSearchParams();
+  
+  if (search && search.trim() !== '') {
+    params.set('q', search.trim());
+  }
+  
+  if (sortConfig && sortConfig.column) {
+    params.set('sort', sortConfig.column);
+    params.set('dir', sortConfig.direction);
+  }
+  
+  if (filters && Object.keys(filters).length > 0) {
+    const cleanFilters = {};
+    Object.entries(filters).forEach(([key, val]) => {
+      if (Array.isArray(val) && val.length > 0) {
+        cleanFilters[key] = val;
+      }
+    });
+    if (Object.keys(cleanFilters).length > 0) {
+      params.set('f', encodeURIComponent(JSON.stringify(cleanFilters)));
+    }
+  }
+  
+  const newUrl = `${window.location.pathname}?${params.toString()}`;
+  window.history.pushState({}, '', newUrl);
+};
+
+
 function App() {
   const [initialCache] = useState(() => readJson(CACHE_KEY));
 
+  const initState = getInitialStateFromURL();
   const [data, setData] = useState([]);
   const [columns, setColumns] = useState([]);
   const [masterCount, setMasterCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(initState.q);
   const [debouncedTerm, setDebouncedTerm] = useState('');
-  const [sortConfig, setSortConfig] = useState({ column: null, direction: 'asc' });
-  const [filters, setFilters] = useState({});
+  const [sortConfig, setSortConfig] = useState(initState.sortConfig);
+  const [filters, setFilters] = useState(initState.filters);
   const [colWidths, setColWidths] = useState(() => readJson(WIDTHS_KEY) || {});
+  const [bookmarks, setBookmarks] = useState(() => readJson(BOOKMARKS_KEY) || []);
   const [facets, setFacets] = useState({});
   const [facetsLoading, setFacetsLoading] = useState(null);
   const [dataVersion, setDataVersion] = useState(0);
   const [status, setStatus] = useState(() => (initialCache?.csv ? 'checking' : 'idle'));
   const [showChannelsPopover, setShowChannelsPopover] = useState(false);
+  const [showBookmarksOnly, setShowBookmarksOnly] = useState(false);
   const channelsBtnRef = useRef(null);
 
   const workerRef = useRef(null);
   const widthsRef = useRef(colWidths);
+
+  const getRowKey = useCallback((row) => {
+    return row['كد ارائه كلاس درس'] || row['كد درس'] || `${row['نام درس']}_${row['استاد']}`;
+  }, []);
+
+
+  const filteredData = useMemo(() => {
+    if (!showBookmarksOnly) return data;
+    const keySet = new Set(bookmarks);
+    return data.filter(row => keySet.has(getRowKey(row)));
+  }, [data, showBookmarksOnly, bookmarks, getRowKey]);
+
+
+  useEffect(() => {
+    updateURL(debouncedTerm, filters, sortConfig);
+  }, [debouncedTerm, filters, sortConfig]);
+
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const newState = getInitialStateFromURL();
+      setSearchTerm(newState.q);
+      setSortConfig(newState.sortConfig);
+      setFilters(newState.filters);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
 
   useEffect(() => {
     const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
@@ -221,6 +311,19 @@ function App() {
 
   const closeChannelsPopover = () => setShowChannelsPopover(false);
 
+  const toggleBookmark = useCallback((rowKey) => {
+    setBookmarks((prev) => {
+      let newBookmarks;
+      if (prev.includes(rowKey)) {
+        newBookmarks = prev.filter((id) => id !== rowKey);
+      } else {
+        newBookmarks = [...prev, rowKey];
+      }
+      writeJson(BOOKMARKS_KEY, newBookmarks);
+      return newBookmarks;
+    });
+  }, []);
+
   return (
     <div className="h-[100dvh] w-full flex flex-col overflow-hidden bg-gradient-to-b from-slate-50 via-white to-blue-50/40">
       <header className="flex-none backdrop-blur-xl bg-white/70 border-b border-slate-200/70 shadow-sm z-30 py-1.5 px-3 md:px-4">
@@ -319,9 +422,20 @@ function App() {
 
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
                 <span className="whitespace-nowrap text-lg">
-                  <span className="font-black text-slate-700">{data.length.toLocaleString('fa-IR')}</span>
+                  <span className="font-black text-slate-700">{filteredData.length.toLocaleString('fa-IR')}</span>
                   {' '}از {masterCount.toLocaleString('fa-IR')}
                 </span>
+                <button
+                  onClick={() => setShowBookmarksOnly(prev => !prev)}
+                  className={`text-sm font-bold whitespace-nowrap px-2 py-0.5 rounded-full transition-all ${
+                    showBookmarksOnly
+                      ? 'bg-amber-100 text-amber-700 border border-amber-300'
+                      : 'text-amber-600 hover:bg-amber-50'
+                  }`}
+                  title={showBookmarksOnly ? 'نمایش همه‌ی دروس' : 'نمایش فقط دروس نشانه‌گذاری‌شده'}
+                >
+                  ❤️ {bookmarks.length.toLocaleString('fa-IR')}
+                </button>
 
                 {status === 'checking' && (
                   <span className="flex items-center gap-1 text-blue-500 font-medium whitespace-nowrap">
@@ -392,7 +506,7 @@ function App() {
               ) : (
                 <>
                   <VirtualTable
-                    data={data}
+                    data={filteredData}
                     columns={columns}
                     sortConfig={sortConfig}
                     onSort={handleSort}
@@ -405,11 +519,17 @@ function App() {
                     onColumnResize={handleColumnResize}
                     onWidthsCommit={persistWidths}
                     onColumnReset={(col) => handleColumnResize(col, null)}
+                    bookmarks={bookmarks}
+                    onToggleBookmark={toggleBookmark}
                   />
-                  {data.length === 0 && (
+                  {filteredData.length === 0 && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 gap-2 pointer-events-none">
-                      <span className="text-5xl">🔍</span>
-                      <p className="text-sm font-bold">موردی مطابق جستجو یا فیلترها یافت نشد</p>
+                      <span className="text-5xl">{showBookmarksOnly ? '❤️' : '🔍'}</span>
+                      <p className="text-sm font-bold">
+                        {showBookmarksOnly
+                          ? 'هیچ درسی نشانه‌گذاری نشده است'
+                          : 'موردی مطابق جستجو یا فیلترها یافت نشد'}
+                      </p>
                     </div>
                   )}
                 </>

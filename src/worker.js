@@ -13,6 +13,14 @@ const normalizeFarsi = (text) => {
     .trim();
 };
 
+const normalizeDisplay = (text) => {
+  if (text === null || text === undefined) return '';
+  return String(text)
+    .replace(/\u064A/g, '\u06CC')
+    .replace(/\u0643/g, '\u06A9')
+    .trim();
+};
+
 const normCell = (value) => {
   const s = value === null || value === undefined ? '' : String(value).trim();
   return s === '' ? '(خالی)' : normalizeFarsi(s);
@@ -20,7 +28,7 @@ const normCell = (value) => {
 
 const displayCell = (value) => {
   const s = value === null || value === undefined ? '' : String(value).trim();
-  return s === '' ? '(خالی)' : s;
+  return s === '' ? '(خالی)' : normalizeDisplay(s);
 };
 
 const parseCsv = (csvString) =>
@@ -145,7 +153,15 @@ self.onmessage = async (e) => {
     }
 
     if (type === 'QUERY') {
-      self.postMessage({ type: 'QUERY_RESULTS', payload: { rows: applyQuery(payload || {}) } });
+      const rows = applyQuery(payload || {});
+      const displayRows = rows.map(row => {
+        const newRow = {};
+        for (const col of columns) {
+          newRow[col] = displayCell(row[col]);
+        }
+        return newRow;
+      });
+      self.postMessage({ type: 'QUERY_RESULTS', payload: { rows: displayRows } });
     }
 
     if (type === 'FACETS') {
