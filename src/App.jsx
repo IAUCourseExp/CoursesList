@@ -1,7 +1,7 @@
-const LAST_UPDATE = import.meta.env.VITE_BUILD_TIME || 'تاریخ نامشخص';
-
 import VirtualTable from './components/VirtualTable';
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+
+const LAST_UPDATE = import.meta.env.VITE_BUILD_TIME || 'تاریخ نامشخص';
 
 const CACHE_KEY = 'usc.cache.v1';
 const WIDTHS_KEY = 'usc.colwidths.v1';
@@ -22,7 +22,7 @@ function writeJson(key, value) {
   }
 }
 
-const LAST_UPDATE = '27 مرداد 1405';
+// const LAST_UPDATE = '27 مرداد 1405';
 
 const TelegramIcon = ({ className }) => (
   <img
