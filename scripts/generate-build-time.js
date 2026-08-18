@@ -5,8 +5,6 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const now = new Date();
-const offset = 3.5 * 60 * 60 * 1000;
-const tehranTime = new Date(now.getTime() + offset);
 
 const formatter = new Intl.DateTimeFormat('fa-IR', {
   year: 'numeric',
@@ -16,7 +14,8 @@ const formatter = new Intl.DateTimeFormat('fa-IR', {
   minute: '2-digit',
   timeZone: 'Asia/Tehran',
 });
-const formatted = formatter.format(tehranTime);
+
+const formatted = formatter.format(now);
 
 const envContent = `VITE_BUILD_TIME="${formatted}"\n`;
 fs.writeFileSync(path.resolve(__dirname, '../.env.local'), envContent, 'utf8');
