@@ -20,7 +20,7 @@ function writeJson(key, value) {
   }
 }
 
-const LAST_UPDATE = '26 مرداد 1405';
+const LAST_UPDATE = '27 مرداد 1405';
 
 const TelegramIcon = ({ className }) => (
   <img
