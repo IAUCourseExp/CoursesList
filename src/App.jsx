@@ -316,7 +316,7 @@ function App() {
               </div>
 
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
-                <span className="whitespace-nowrap">
+                <span className="whitespace-nowrap text-lg">
                   <span className="font-black text-slate-700">{data.length.toLocaleString('fa-IR')}</span>
                   {' '}از {masterCount.toLocaleString('fa-IR')}
                 </span>
