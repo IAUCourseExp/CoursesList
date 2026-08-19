@@ -313,7 +313,7 @@ function App() {
 
     try {
       await navigator.clipboard.writeText(shareUrl);
-      setToastMessage('لینک این برنامه با موفقیت کپی شد! 🔗');
+      setToastMessage('لینک این برنامه درسی با موفقیت کپی شد! 🔗');
       setTimeout(() => setToastMessage(null), 3500);
     } catch (err) {
       prompt('مرورگر شما از کپی خودکار پشتیبانی نمی‌کند. لطفاً لینک زیر را کپی کنید:', shareUrl);
