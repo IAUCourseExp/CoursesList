@@ -365,7 +365,7 @@ function App() {
               >
                 <span className="text-sm">🔢</span>
                 <span className="hidden sm:inline">کد دروس</span>
-                <span className="sm:hidden">کدها</span>
+                <span className="sm:hidden">کد دروس</span>
               </a>
 
               <a
