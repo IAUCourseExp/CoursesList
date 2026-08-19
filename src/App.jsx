@@ -10,7 +10,7 @@ const BOOKMARKS_KEY = 'usc.bookmarks.v1';
 function readJson(key) {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : null;
+    return raw ? JSON.parse(raw) : null; 
   } catch {
     return null;
   }
