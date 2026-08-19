@@ -23,8 +23,6 @@ function writeJson(key, value) {
   }
 }
 
-// const LAST_UPDATE = '27 مرداد 1405';
-
 const TelegramIcon = ({ className }) => (
   <img
     src="https://upload.wikimedia.org/wikipedia/commons/8/82/Telegram_logo.svg"
@@ -33,59 +31,15 @@ const TelegramIcon = ({ className }) => (
   />
 );
 
-const ChannelsPopover = ({ triggerRef, onClose }) => {
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (triggerRef.current && !triggerRef.current.contains(e.target) && !e.target.closest('.channels-popover')) {
-        onClose();
-      }
-    };
-    document.addEventListener('pointerdown', handleClickOutside);
-    return () => document.removeEventListener('pointerdown', handleClickOutside);
-  }, [onClose, triggerRef]);
-
-  return (
-    <div className="channels-popover absolute left-0 top-full mt-1 w-56 bg-white/95 backdrop-blur-md rounded-xl shadow-xl border border-slate-200/80 p-3 z-50 text-right">
-      <h5 className="text-xs font-bold text-slate-700 flex items-center gap-1 mb-2 border-b border-slate-200/80 pb-1.5">
-        <span>📢</span> کانال‌های مرتبط
-      </h5>
-      <ul className="space-y-1.5 text-xs">
-        <li className="flex items-center gap-1">
-          <span className="opacity-70">📚</span>
-          <span className="font-medium">جزوه:</span>
-          <a href="https://t.me/JozveIAU" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline flex items-center gap-1">
-            <TelegramIcon className="w-3 h-3" /> JozveIAU
-          </a>
-        </li>
-        <li className="flex items-center gap-1">
-          <span className="opacity-70">⁉️</span>
-          <span className="font-medium">تجربیات:</span>
-          <a href="https://t.me/IAUCourseExp" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline flex items-center gap-1">
-            <TelegramIcon className="w-3 h-3" /> IAUCourseExp
-          </a>
-        </li>
-        <li className="flex items-center gap-1">
-          <span className="opacity-70">💻</span>
-          <span className="font-medium">انجمن کامپیوتر:</span>
-          <a href="https://t.me/shziaucesa" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline flex items-center gap-1">
-            <TelegramIcon className="w-3 h-3" /> shziaucesa
-          </a>
-        </li>
-      </ul>
-    </div>
-  );
-};
-
-
 const getInitialStateFromURL = () => {
   const params = new URLSearchParams(window.location.search);
-  
+
   const q = params.get('q') || '';
-  
+
   const sortCol = params.get('sort') || null;
   const sortDir = params.get('dir') || 'asc';
   const sortConfig = sortCol ? { column: sortCol, direction: sortDir } : { column: null, direction: 'asc' };
-  
+
   let filters = {};
   try {
     const f = params.get('f');
@@ -99,22 +53,32 @@ const getInitialStateFromURL = () => {
     console.warn('خطا در خواندن فیلترهای URL:', e);
     filters = {};
   }
-  
-  return { q, sortConfig, filters };
+
+  let sharedBookmarks = null;
+  try {
+    const b = params.get('b');
+    if (b) {
+      sharedBookmarks = b.split('||').map(decodeURIComponent);
+    }
+  } catch (e) {
+    console.warn('خطا در خواندن دروس اشتراکی:', e);
+  }
+
+  return { q, sortConfig, filters, sharedBookmarks };
 };
 
 const updateURL = (search, filters, sortConfig) => {
   const params = new URLSearchParams();
-  
+
   if (search && search.trim() !== '') {
     params.set('q', search.trim());
   }
-  
+
   if (sortConfig && sortConfig.column) {
     params.set('sort', sortConfig.column);
     params.set('dir', sortConfig.direction);
   }
-  
+
   if (filters && Object.keys(filters).length > 0) {
     const cleanFilters = {};
     Object.entries(filters).forEach(([key, val]) => {
@@ -126,11 +90,10 @@ const updateURL = (search, filters, sortConfig) => {
       params.set('f', encodeURIComponent(JSON.stringify(cleanFilters)));
     }
   }
-  
+
   const newUrl = `${window.location.pathname}?${params.toString()}`;
   window.history.pushState({}, '', newUrl);
 };
-
 
 function App() {
   const [initialCache] = useState(() => readJson(CACHE_KEY));
@@ -142,26 +105,34 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [searchTerm, setSearchTerm] = useState(initState.q);
-  const [debouncedTerm, setDebouncedTerm] = useState('');
+  const [debouncedTerm, setDebouncedTerm] = useState(initState.q);
   const [sortConfig, setSortConfig] = useState(initState.sortConfig);
   const [filters, setFilters] = useState(initState.filters);
   const [colWidths, setColWidths] = useState(() => readJson(WIDTHS_KEY) || {});
-  const [bookmarks, setBookmarks] = useState(() => readJson(BOOKMARKS_KEY) || []);
   const [facets, setFacets] = useState({});
   const [facetsLoading, setFacetsLoading] = useState(null);
   const [dataVersion, setDataVersion] = useState(0);
   const [status, setStatus] = useState(() => (initialCache?.csv ? 'checking' : 'idle'));
-  const [showChannelsPopover, setShowChannelsPopover] = useState(false);
-  const [showBookmarksOnly, setShowBookmarksOnly] = useState(false);
-  const channelsBtnRef = useRef(null);
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+
+  const [bookmarks, setBookmarks] = useState(() => {
+    if (initState.sharedBookmarks) {
+      writeJson(BOOKMARKS_KEY, initState.sharedBookmarks);
+      return initState.sharedBookmarks;
+    }
+    return readJson(BOOKMARKS_KEY) || [];
+  });
+
+  const [showBookmarksOnly, setShowBookmarksOnly] = useState(!!initState.sharedBookmarks);
+  
+  const [toastMessage, setToastMessage] = useState(null);
 
   const workerRef = useRef(null);
   const widthsRef = useRef(colWidths);
 
   const getRowKey = useCallback((row) => {
-    return row['كد ارائه كلاس درس'] || row['كد درس'] || `${row['نام درس']}_${row['استاد']}`;
+    return row['كد ارائه كلاس درس'] || row['كد درس'] || `${row['نام درس']}_${row['استاد'] || 'نامشخص'}`;
   }, []);
-
 
   const filteredData = useMemo(() => {
     if (!showBookmarksOnly) return data;
@@ -169,11 +140,9 @@ function App() {
     return data.filter(row => keySet.has(getRowKey(row)));
   }, [data, showBookmarksOnly, bookmarks, getRowKey]);
 
-
   useEffect(() => {
     updateURL(debouncedTerm, filters, sortConfig);
   }, [debouncedTerm, filters, sortConfig]);
-
 
   useEffect(() => {
     const handlePopState = () => {
@@ -187,6 +156,11 @@ function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
@@ -254,6 +228,16 @@ function App() {
     });
   }, [debouncedTerm, filters, sortConfig, dataVersion]);
 
+  const visibleColumns = useMemo(() => {
+    const alwaysVisible = ['كد درس', 'نام درس', 'نوع درس', 'تعداد واحد نظري', 'تعداد واحد عملي', 'كد ارائه كلاس درس', 'استاد', 'زمانبندي تشكيل كلاس', 'زمان امتحان'];
+
+    if (windowWidth < 768) {
+      return columns.filter(col => alwaysVisible.includes(col));
+    } else {
+      return columns;
+    }
+  }, [columns, windowWidth]);
+
   const handleSearch = (e) => {
     const value = e.target.value;
     setSearchTerm(value);
@@ -309,8 +293,6 @@ function App() {
   const hasActiveFilters = Object.keys(filters).length > 0;
   const hasCustomWidths = useMemo(() => Object.keys(colWidths).length > 0, [colWidths]);
 
-  const closeChannelsPopover = () => setShowChannelsPopover(false);
-
   const toggleBookmark = useCallback((rowKey) => {
     setBookmarks((prev) => {
       let newBookmarks;
@@ -324,11 +306,26 @@ function App() {
     });
   }, []);
 
+  const handleShare = async () => {
+    const baseUrl = window.location.origin + window.location.pathname;
+    const bParam = bookmarks.map(encodeURIComponent).join('||');
+    const shareUrl = `${baseUrl}?b=${bParam}`;
+
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setToastMessage('لینک این برنامه با موفقیت کپی شد! 🔗');
+      setTimeout(() => setToastMessage(null), 3500);
+    } catch (err) {
+      prompt('مرورگر شما از کپی خودکار پشتیبانی نمی‌کند. لطفاً لینک زیر را کپی کنید:', shareUrl);
+    }
+  };
+
   return (
     <div className="h-[100dvh] w-full flex flex-col overflow-hidden bg-gradient-to-b from-slate-50 via-white to-blue-50/40">
-      <header className="flex-none backdrop-blur-xl bg-white/70 border-b border-slate-200/70 shadow-sm z-30 py-1.5 px-3 md:px-4">
-        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-1.5">
-          <div className="flex items-center gap-2 flex-wrap">
+      <header className="flex-none backdrop-blur-xl bg-white/80 border-b border-slate-200/70 shadow-sm z-30 py-2 md:py-2.5 px-3 md:px-5">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3 w-full">
+          
+          <div className="flex justify-between items-center w-full md:w-auto gap-4">
             <div className="premium-nav-matrix">
               <div className="matrix-bg-rain">
                 0101001011010101001010100111010101010100101101010100101010011101
@@ -340,58 +337,55 @@ function App() {
                 لیست دروس دانشگاه آزاد شیراز
               </h1>
             </div>
-            <span className="text-xs sm:text-sm md:text-base font-extrabold bg-blue-50/90 border border-blue-200/70 text-blue-700 px-3 py-1 rounded-full whitespace-nowrap inline-flex items-center gap-1">
+            
+            <span className="text-[10px] md:text-xs font-extrabold bg-blue-50/90 border border-blue-200/70 text-blue-700 px-2.5 py-1 rounded-full whitespace-nowrap inline-flex items-center gap-1">
               🔄 {LAST_UPDATE}
             </span>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <a
-              href={`${import.meta.env.BASE_URL}data.csv`}
-              download={`لیست_دروس_${LAST_UPDATE.replace(/ /g, '_')}.csv`}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/20 hover:border-emerald-500/50 transition-all text-[11px] sm:text-xs font-bold whitespace-nowrap"
-            >
-              <span>📥</span>
-              <span className="hidden xs:inline">دانلود</span>
-            </a>
-
-            <div className="hidden sm:flex items-center gap-2 text-[10px] sm:text-[11px] text-slate-600 bg-slate-100/70 px-2.5 py-1 rounded-full border border-slate-200/60 shadow-sm">
-              <span className="opacity-70">📢</span>
+          <div className="flex justify-between items-center w-full md:w-auto gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[11px] text-slate-600 bg-slate-100/70 px-2.5 py-1.5 rounded-full border border-slate-200/60 shadow-sm whitespace-nowrap">
+              <span className="opacity-70 hidden xs:inline text-xs">📢</span>
               <a href="https://t.me/JozveIAU" target="_blank" rel="noreferrer" className="hover:text-blue-600 flex items-center gap-0.5">
-                <TelegramIcon className="w-3 h-3" /> جزوه
+                <TelegramIcon className="w-3 h-3" /> <span className="hidden xs:inline">جزوه</span><span className="xs:hidden">جزوه</span>
               </a>
               <span className="text-slate-300">|</span>
               <a href="https://t.me/IAUCourseExp" target="_blank" rel="noreferrer" className="hover:text-blue-600 flex items-center gap-0.5">
-                <TelegramIcon className="w-3 h-3" /> تجربیات
-              </a>
-              <span className="text-slate-300">|</span>
-              <a href="https://t.me/shziaucesa" target="_blank" rel="noreferrer" className="hover:text-blue-600 flex items-center gap-0.5">
-                <TelegramIcon className="w-3 h-3" /> انجمن کامپیوتر
+                <TelegramIcon className="w-3 h-3" /> <span className="hidden xs:inline">تجربیات</span><span className="xs:hidden">تجربیات</span>
               </a>
             </div>
 
-            <button
-              ref={channelsBtnRef}
-              onClick={() => setShowChannelsPopover((v) => !v)}
-              className="sm:hidden p-1 rounded-lg hover:bg-slate-200/70 transition-colors text-slate-600 relative"
-              title="کانال‌های مرتبط"
-            >
-              <span className="text-lg">📢</span>
-              {showChannelsPopover && (
-                <ChannelsPopover
-                  triggerRef={channelsBtnRef}
-                  onClose={closeChannelsPopover}
-                />
-              )}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <a
+                href="https://iaucourseexp.github.io/CoursesCodes/"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 md:px-3 md:py-2 rounded-lg bg-violet-500/10 border border-violet-500/30 text-violet-700 hover:bg-violet-500/20 hover:border-violet-500/50 transition-all text-[11px] md:text-sm font-bold whitespace-nowrap shadow-sm"
+                title="ابزار جستجو و دریافت کدهای دروس"
+              >
+                <span className="text-sm">🔢</span>
+                <span className="hidden sm:inline">کد دروس</span>
+                <span className="sm:hidden">کدها</span>
+              </a>
+
+              <a
+                href={`${import.meta.env.BASE_URL}data.csv`}
+                download={`لیست_دروس_${LAST_UPDATE.replace(/ /g, '_')}.csv`}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 md:px-3 md:py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/20 hover:border-emerald-500/50 transition-all text-[11px] md:text-sm font-bold whitespace-nowrap shadow-sm"
+              >
+                <span className="text-sm">📥</span>
+                <span className="hidden xs:inline">دانلود</span>
+              </a>
+            </div>
           </div>
+
         </div>
       </header>
 
       <main className="flex-1 min-h-0 w-full px-2 md:px-4 pt-1.5 pb-2 md:pb-4">
         <div className="h-full flex flex-col min-h-0 w-full">
           <div className="flex-1 min-h-0 bg-white/90 backdrop-blur-sm shadow-2xl shadow-slate-300/40 rounded-2xl md:rounded-3xl w-full border border-slate-200/80 overflow-hidden relative flex flex-col">
-            
+
             <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b border-slate-200/80 px-3 py-2 flex flex-wrap items-center gap-2">
               <div className="relative flex-1 min-w-[120px] max-w-xs">
                 <input
@@ -421,21 +415,35 @@ function App() {
               </div>
 
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
-                <span className="whitespace-nowrap text-lg">
-                  <span className="font-black text-slate-700">{filteredData.length.toLocaleString('fa-IR')}</span>
-                  {' '}از {masterCount.toLocaleString('fa-IR')}
+                <span className="whitespace-nowrap text-sm sm:text-lg bg-blue-50/80 px-2 py-1 rounded-full border border-blue-100/60">
+                  <span className="font-black text-blue-700">{filteredData.length.toLocaleString('fa-IR')}</span>
+                  <span className="text-slate-500 mx-1">از</span>
+                  <span className="font-bold text-slate-600">{masterCount.toLocaleString('fa-IR')}</span>
                 </span>
-                <button
-                  onClick={() => setShowBookmarksOnly(prev => !prev)}
-                  className={`text-sm font-bold whitespace-nowrap px-2 py-0.5 rounded-full transition-all ${
-                    showBookmarksOnly
-                      ? 'bg-amber-100 text-amber-700 border border-amber-300'
-                      : 'text-amber-600 hover:bg-amber-50'
-                  }`}
-                  title={showBookmarksOnly ? 'نمایش همه‌ی دروس' : 'نمایش فقط دروس نشانه‌گذاری‌شده'}
-                >
-                  ❤️ {bookmarks.length.toLocaleString('fa-IR')}
-                </button>
+                
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setShowBookmarksOnly(prev => !prev)}
+                    className={`text-sm font-bold whitespace-nowrap px-3 py-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full transition-all ${
+                      showBookmarksOnly
+                        ? 'bg-amber-100 text-amber-700 border border-amber-300'
+                        : 'text-amber-600 hover:bg-amber-50'
+                    }`}
+                    title={showBookmarksOnly ? 'نمایش همه‌ی دروس' : 'نمایش فقط دروس نشانه‌گذاری‌شده'}
+                  >
+                    ❤️ {bookmarks.length.toLocaleString('fa-IR')}
+                  </button>
+
+                  {showBookmarksOnly && bookmarks.length > 0 && (
+                    <button
+                      onClick={handleShare}
+                      className="text-[11px] sm:text-sm font-bold whitespace-nowrap px-3 py-2 min-h-[44px] flex items-center justify-center gap-1.5 rounded-full bg-blue-100 text-blue-700 border border-blue-300 hover:bg-blue-200 transition-all shadow-sm animate-fade-in-up"
+                      title="اشتراک‌گذاری این برنامه درسی با دیگران"
+                    >
+                      🔗 <span className="hidden xs:inline">اشتراک</span>
+                    </button>
+                  )}
+                </div>
 
                 {status === 'checking' && (
                   <span className="flex items-center gap-1 text-blue-500 font-medium whitespace-nowrap">
@@ -452,13 +460,13 @@ function App() {
                     key={col}
                     onClick={() => handleFilterChange(col, null)}
                     title="حذف این فیلتر"
-                    className="inline-flex items-center gap-1 bg-blue-100/80 text-blue-700 border border-blue-200/80 rounded-full px-2 py-0.5 font-medium hover:bg-blue-200/80 transition-colors max-w-[140px] whitespace-nowrap"
+                    className="inline-flex items-center gap-1 bg-blue-100/80 text-blue-700 border border-blue-200/80 rounded-full px-3 py-2 min-h-[44px] font-medium hover:bg-blue-200/80 transition-colors max-w-[160px] whitespace-nowrap text-sm"
                   >
                     <span className="font-bold">{col}:</span>
                     <span className="truncate">
                       {vals.length === 1 ? vals[0] : `${vals.length.toLocaleString('fa-IR')} مقدار`}
                     </span>
-                    <span className="text-blue-400">✕</span>
+                    <span className="text-blue-400 text-base">✕</span>
                   </button>
                 ))}
 
@@ -466,7 +474,7 @@ function App() {
                   {hasActiveFilters && (
                     <button
                       onClick={clearAllFilters}
-                      className="text-red-500 hover:text-red-600 font-bold transition-colors text-[11px] whitespace-nowrap"
+                      className="text-red-500 hover:text-red-600 font-bold transition-colors text-sm whitespace-nowrap px-2 py-2 min-h-[44px]"
                     >
                       ✕ حذف فیلترها
                     </button>
@@ -507,7 +515,7 @@ function App() {
                 <>
                   <VirtualTable
                     data={filteredData}
-                    columns={columns}
+                    columns={visibleColumns}
                     sortConfig={sortConfig}
                     onSort={handleSort}
                     filters={filters}
@@ -521,6 +529,7 @@ function App() {
                     onColumnReset={(col) => handleColumnResize(col, null)}
                     bookmarks={bookmarks}
                     onToggleBookmark={toggleBookmark}
+                    getRowKey={getRowKey}
                   />
                   {filteredData.length === 0 && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 gap-2 pointer-events-none">
@@ -538,6 +547,13 @@ function App() {
           </div>
         </div>
       </main>
+
+      {toastMessage && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] bg-slate-800/95 backdrop-blur-md text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-fade-in-up border border-slate-700 w-max max-w-[90vw]">
+          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 text-sm">✓</span>
+          <span className="text-xs sm:text-sm font-medium text-right" dir="rtl">{toastMessage}</span>
+        </div>
+      )}
 
       <footer className="flex-none py-1.5 bg-white/70 backdrop-blur-md border-t border-slate-200/70 text-center z-10">
         <div className="text-[10px] sm:text-[11px] text-slate-500 font-medium px-3 leading-relaxed">

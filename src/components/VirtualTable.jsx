@@ -30,7 +30,8 @@ const DEFAULT_WIDTHS = {
 const MIN_COL_WIDTH = 70;
 const MAX_COL_WIDTH = 640;
 const FACET_RENDER_CAP = 300;
-const HEADER_HEIGHT = 80;
+const HEADER_HEIGHT = 85;
+const MOBILE_TOP_GAP = 16;
 
 const normHeader = (s) => s.replace(/\u064A/g, '\u06CC').replace(/\u0643/g, '\u06A9');
 const DEFAULT_WIDTHS_BY_NORM = Object.fromEntries(
@@ -43,16 +44,7 @@ const defaultWidth = (colName) => {
 };
 
 const FunnelIcon = ({ className }) => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2.4"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
-    aria-hidden="true"
-  >
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
     <path d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5z" />
   </svg>
 );
@@ -73,12 +65,39 @@ const VirtualTable = ({
   onColumnReset,
   bookmarks = [],
   onToggleBookmark = () => {},
+  
 }) => {
   const parentRef = useRef();
   const [openFacet, setOpenFacet] = useState(null);
   const [facetSearch, setFacetSearch] = useState('');
   const [draggingCol, setDraggingCol] = useState(null);
+
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (parentRef.current) {
+        const scrollTop = parentRef.current.scrollTop;
+        setShowBackToTop(scrollTop > 150);
+      }
+    };
+
+    const el = parentRef.current;
+    if (el) {
+      el.addEventListener('scroll', handleScroll);
+      return () => el.removeEventListener('scroll', handleScroll);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const bookmarkSet = useMemo(() => new Set(bookmarks), [bookmarks]);
+  const isMobile = windowWidth < 768;
 
   const widthOf = useCallback(
     (col) => colWidths[col] ?? defaultWidth(col),
@@ -103,7 +122,7 @@ const VirtualTable = ({
   const rowVirtualizer = useVirtualizer({
     count: data.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 100,
+    estimateSize: () => isMobile ? 160 : 45,
     overscan: 10,
   });
 
@@ -117,6 +136,10 @@ const VirtualTable = ({
 
   useLayoutEffect(() => {
     if (parentRef.current) {
+      if (isFirstLoad.current) {
+        parentRef.current.scrollTop = 0;
+      }
+      
       if (isFirstLoad.current && data.length > 0) {
         const maxScroll = parentRef.current.scrollWidth - parentRef.current.clientWidth;
         parentRef.current.scrollLeft = maxScroll;
@@ -128,11 +151,9 @@ const VirtualTable = ({
     }
   }, [data]);
 
-
   const getRowKey = useCallback((row) => {
-    return row['كد ارائه كلاس درس'] || row['كد درس'] || row['نام درس'] + Math.random();
+    return row['كد ارائه كلاس درس'] || row['كد درس'] || `${row['نام درس']}_${row['استاد'] || 'نامشخص'}`;
   }, []);
-
 
   const startResize = (e, col) => {
     e.preventDefault();
@@ -174,7 +195,7 @@ const VirtualTable = ({
       return;
     }
     const rect = e.currentTarget.getBoundingClientRect();
-    const align = rect.left < 300 ? 'left' : 'right';
+    const align = rect.left < window.innerWidth / 2 ? 'left' : 'right';
     setFacetSearch('');
     setOpenFacet({ col, align });
     onEnsureFacets(col);
@@ -301,19 +322,35 @@ const VirtualTable = ({
       <div
         ref={parentRef}
         onScroll={handleScroll}
-        className="h-full w-full overflow-auto bg-white custom-scrollbar"
+        className={`h-full w-full ${isMobile ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto'} bg-white custom-scrollbar`}
         style={{ direction: 'ltr' }}
       >
+        {showBackToTop && isMobile && (
+          <button
+            onClick={() => {
+              if (parentRef.current) {
+                parentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }}
+            className="fixed bottom-20 right-4 z-50 bg-blue-600 text-white rounded-full shadow-2xl shadow-blue-500/50 p-3 transition-all hover:bg-blue-700 active:scale-95 animate-fade-in-up"
+            aria-label="بازگشت به بالا"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+            </svg>
+          </button>
+        )}
+
         <div
           style={{
-            height: `${rowVirtualizer.getTotalSize() + HEADER_HEIGHT}px`,
+            height: `${rowVirtualizer.getTotalSize() + (isMobile ? MOBILE_TOP_GAP : HEADER_HEIGHT)}px`,
             width: '100%',
-            minWidth: `${minTableWidth}px`,
+            minWidth: isMobile ? '100%' : `${minTableWidth}px`,
             position: 'relative',
             direction: 'ltr',
           }}
         >
-          <div className="sticky top-0 z-30 flex h-20 bg-slate-900/95 backdrop-blur text-white shadow-lg shadow-slate-900/20 w-full">
+          <div className={`sticky top-0 z-30 flex h-20 bg-slate-900/95 backdrop-blur text-white shadow-lg shadow-slate-900/20 w-full ${isMobile ? 'hidden' : ''}`}>
             {['_star', ...columns].reverse().map((col) => {
               if (col === '_star') {
                 return (
@@ -326,7 +363,6 @@ const VirtualTable = ({
                   </div>
                 );
               }
-              const isStarCol = col === '_star';
               const isActiveFilter = filters[col]?.length > 0;
               return (
                 <div
@@ -394,57 +430,133 @@ const VirtualTable = ({
             })}
           </div>
 
+          {}
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const row = data[virtualRow.index];
+            const rowKey = getRowKey(row);
+            const isBookmarked = bookmarkSet.has(rowKey);
+
             return (
               <div
                 key={virtualRow.key}
-                className={`absolute top-0 left-0 w-full border-b border-slate-100 flex items-center transition-colors duration-150 ${
-                  virtualRow.index % 2 === 0 ? 'bg-white' : 'bg-slate-50/70'
-                } hover:bg-blue-50/70`}
+                data-index={virtualRow.index}
+                ref={isMobile ? rowVirtualizer.measureElement : null}
+                className={`absolute top-0 left-0 w-full transition-colors duration-150 ${
+                  isMobile
+                    ? 'px-2'
+                    : `border-b border-slate-100 flex items-center ${
+                        virtualRow.index % 2 === 0 ? 'bg-white' : 'bg-slate-50/70'
+                      } hover:bg-blue-50/70`
+                }`}
                 style={{
-                  height: `${virtualRow.size}px`,
-                  transform: `translateY(${virtualRow.start + HEADER_HEIGHT}px)`,
+                  transform: `translateY(${virtualRow.start + (isMobile ? MOBILE_TOP_GAP : HEADER_HEIGHT)}px)`,
+                  ...(isMobile ? { paddingBottom: '12px', height: 'auto' } : { height: `${virtualRow.size}px` }),
                 }}
               >
-                {['_star', ...columns].reverse().map((col) => {
-                  if (col === '_star') {
-                    const key = getRowKey(row);
-                    const isBookmarked = bookmarkSet.has(key);
-                    return (
-                      <div
-                        key={col}
-                        style={{ width: '50px', flexShrink: 0, direction: 'rtl' }}
-                        className="px-1 flex items-center justify-center border-l border-slate-100/80 last:border-l-0"
-                      >
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onToggleBookmark(key);
-                          }}
-                          className={`text-xl transition-all transform hover:scale-125 ${
-                            isBookmarked ? 'text-red-500' : 'text-slate-300 hover:text-red-300'
-                          }`}
-                          title={isBookmarked ? 'حذف از علاقه‌مندی‌ها' : 'افزودن به علاقه‌مندی‌ها'}
-                        >
-                          {isBookmarked ? '❤️' : '🤍'}
-                        </button>
+                {isMobile ? (
+                  <div className="bg-white rounded-2xl shadow-sm shadow-slate-200/60 border border-slate-200/80 p-4 w-full h-full">
+                    
+                    <div className="flex flex-row-reverse justify-between items-start mb-4 pb-3 border-b border-slate-100/80">
+                      <div className="flex-1 text-right min-w-0 pl-3">
+                        <h3 className="text-[13px] font-extrabold text-slate-800 break-words whitespace-normal leading-relaxed">{row['نام درس'] || 'بدون نام'}</h3>
+                        <p className="text-[11px] text-blue-600 font-bold mt-1.5 break-words whitespace-normal leading-relaxed">{row['استاد'] || 'نامشخص'}</p>
                       </div>
-                    );
-                  }
-
-                  return (
-                    <div
-                      key={col}
-                      style={cellStyle(col)}
-                      className="px-3 md:px-4 text-[12px] md:text-[13px] text-slate-600 font-medium flex items-center justify-center text-center border-l border-slate-100/80 last:border-l-0 overflow-hidden"
-                    >
-                      <span className="break-words w-full leading-relaxed block overflow-hidden whitespace-normal">
-                        {row[col] || '---'}
-                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleBookmark(rowKey);
+                        }}
+                        className={`text-xl transition-all transform hover:scale-110 flex-shrink-0 mt-0.5 ${
+                          isBookmarked ? 'text-red-500' : 'text-slate-300'
+                        }`}
+                      >
+                        {isBookmarked ? '❤️' : '🤍'}
+                      </button>
                     </div>
-                  );
-                })}
+
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 text-[11px] w-full mb-3" dir="rtl">
+                      {columns.map((col) => {
+                        if (['نام درس', 'استاد', 'زمانبندي تشكيل كلاس', 'زمان امتحان'].includes(col)) return null;
+                        return (
+                          <div key={col} className="flex flex-col items-start text-right min-w-0 w-full">
+                            <span className="text-[10px] font-bold text-slate-400 mb-1 break-words whitespace-normal leading-tight">
+                              {col}
+                            </span>
+                            <span className="text-slate-700 font-medium break-words whitespace-normal leading-relaxed w-full">
+                              {row[col] || '---'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex flex-col gap-2 pt-3 border-t border-slate-100/80 w-full" dir="rtl">
+                      
+                      {columns.includes('زمانبندي تشكيل كلاس') && (
+                        <div className="flex items-start gap-2.5 bg-blue-50/60 p-2.5 rounded-xl text-right w-full">
+                          <span className="text-blue-500 mt-0.5 text-base flex-shrink-0">🗓️</span>
+                          <div className="flex flex-col flex-1 min-w-0">
+                            <span className="text-[10px] font-extrabold text-blue-600 mb-0.5">زمانبندي تشكيل كلاس</span>
+                            <span className="text-slate-700 text-[11px] font-medium leading-relaxed break-words whitespace-normal w-full">
+                              {row['زمانبندي تشكيل كلاس'] || '---'}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {columns.includes('زمان امتحان') && (
+                        <div className="flex items-start gap-2.5 bg-amber-50/60 p-2.5 rounded-xl text-right w-full">
+                          <span className="text-amber-500 mt-0.5 text-base flex-shrink-0">⚠️</span>
+                          <div className="flex flex-col flex-1 min-w-0">
+                            <span className="text-[10px] font-extrabold text-amber-600 mb-0.5">زمان امتحان</span>
+                            <span className="text-slate-700 text-[11px] font-medium leading-relaxed break-words whitespace-normal w-full">
+                              {row['زمان امتحان'] || '---'}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                    </div>
+                  </div>
+                ) : (
+                  <div className="w-full h-full flex items-center">
+                    {['_star', ...columns].reverse().map((col) => {
+                      if (col === '_star') {
+                        return (
+                          <div
+                            key={col}
+                            style={{ width: '50px', flexShrink: 0, direction: 'rtl' }}
+                            className="px-1 flex items-center justify-center border-l border-slate-100/80 last:border-l-0 h-full"
+                          >
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onToggleBookmark(rowKey);
+                              }}
+                              className={`text-xl transition-all transform hover:scale-125 ${
+                                isBookmarked ? 'text-red-500' : 'text-slate-300 hover:text-red-300'
+                              }`}
+                              title={isBookmarked ? 'حذف از علاقه‌مندی‌ها' : 'افزودن به علاقه‌مندی‌ها'}
+                            >
+                              {isBookmarked ? '❤️' : '🤍'}
+                            </button>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div
+                          key={col}
+                          style={cellStyle(col)}
+                          className="px-2 md:px-3 text-[11px] md:text-[12px] text-slate-600 font-medium flex items-center justify-center text-center border-l border-slate-100/80 last:border-l-0 overflow-hidden h-full"
+                        >
+                          <span className="break-words w-full leading-relaxed block overflow-hidden whitespace-normal">
+                            {row[col] || '---'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}
