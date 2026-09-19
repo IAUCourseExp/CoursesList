@@ -1,12 +1,24 @@
 import Papa from 'papaparse';
+import { scheduleSortKey, parseExam } from './lib/datetime.js';
+import { PHANTOM_COLUMN } from './lib/columns.js';
 
 let masterData = [];
 let columns = [];
 let facetCache = {};
 
+const SCHEDULE_COL = 'زمانبندي تشكيل كلاس';
+const EXAM_COL = 'زمان امتحان';
+
+// Persian users type ۱۴۰۵, the CSV stores 1405 - unify digits in BOTH directions so
+// either spelling searches, filters and highlights identically.
+const toAsciiDigits = (s) =>
+  String(s)
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660));
+
 const normalizeFarsi = (text) => {
   if (text === null || text === undefined) return '';
-  return String(text)
+  return toAsciiDigits(String(text))
     .replace(/\u064A/g, '\u06CC')
     .replace(/\u0643/g, '\u06A9')
     .toLowerCase()
@@ -15,7 +27,7 @@ const normalizeFarsi = (text) => {
 
 const normalizeDisplay = (text) => {
   if (text === null || text === undefined) return '';
-  return String(text)
+  return toAsciiDigits(String(text))
     .replace(/\u064A/g, '\u06CC')
     .replace(/\u0643/g, '\u06A9')
     .trim();
@@ -42,8 +54,47 @@ const parseCsv = (csvString) =>
 
 const replaceData = (parsed) => {
   masterData = parsed.data || [];
-  columns = parsed.meta?.fields || [];
+  // Drop the empty-named column created by the trailing comma on every line of data.csv;
+  // it is blank in all 2565 rows and only ever added a dead column + dead filter.
+  columns = (parsed.meta?.fields || []).filter((c) => c && c !== PHANTOM_COLUMN);
+  if (parsed.meta?.fields?.includes(PHANTOM_COLUMN)) {
+    for (const row of masterData) delete row[PHANTOM_COLUMN];
+  }
   facetCache = {};
+};
+
+/** Blanks are pushed to the end in BOTH directions - 719 rows have no schedule and
+ *  1305 have no room, and nobody wants those first when they sort descending. */
+const isBlankCell = (v) => v === null || v === undefined || String(v).trim() === '';
+
+/** Only treat a cell as a number when the WHOLE cell is a number.
+ *  (parseFloat("1405/10/05 از 08:00 تا 10:00") used to yield 1405, which made the
+ *  exam column sort as if every exam happened on the same day.) */
+const pureNumber = (v) => {
+  const s = String(v ?? '').trim();
+  return /^-?\d+(?:[.,]\d+)?$/.test(s) ? Number(s.replace(',', '.')) : null;
+};
+
+const compareCells = (column, a, b) => {
+  if (column === SCHEDULE_COL) {
+    const ka = scheduleSortKey(a);
+    const kb = scheduleSortKey(b);
+    if (ka !== null && kb !== null) return ka - kb;
+  } else if (column === EXAM_COL) {
+    const ea = parseExam(a);
+    const eb = parseExam(b);
+    if (ea && eb) {
+      if (ea.sortKey !== eb.sortKey) return ea.sortKey - eb.sortKey;
+      return (ea.from || '').localeCompare(eb.from || '');
+    }
+  }
+
+  const na = pureNumber(a);
+  const nb = pureNumber(b);
+  if (na !== null && nb !== null) return na - nb;
+  if (na !== null && nb === null) return -1;
+  if (na === null && nb !== null) return 1;
+  return String(a ?? '').localeCompare(String(b ?? ''), 'fa');
 };
 
 const applyQuery = ({ search, filters, sort }) => {
@@ -70,18 +121,15 @@ const applyQuery = ({ search, filters, sort }) => {
 
   if (sort && sort.column) {
     const { column, direction } = sort;
+    const flip = direction === 'asc' ? 1 : -1;
     rows = [...rows].sort((a, b) => {
-      const va = a[column] ?? '';
-      const vb = b[column] ?? '';
-      const na = parseFloat(va);
-      const nb = parseFloat(vb);
-      let cmp;
-      if (!isNaN(na) && !isNaN(nb) && String(va).trim() !== '' && String(vb).trim() !== '') {
-        cmp = na - nb;
-      } else {
-        cmp = String(va).localeCompare(String(vb), 'fa');
-      }
-      return direction === 'asc' ? cmp : -cmp;
+      const va = a[column];
+      const vb = b[column];
+      const aBlank = isBlankCell(va);
+      const bBlank = isBlankCell(vb);
+      if (aBlank !== bBlank) return aBlank ? 1 : -1; // blanks always last
+      if (aBlank && bBlank) return 0;
+      return flip * compareCells(column, va, vb);
     });
   }
 
@@ -154,7 +202,7 @@ self.onmessage = async (e) => {
 
     if (type === 'QUERY') {
       const rows = applyQuery(payload || {});
-      const displayRows = rows.map(row => {
+      const displayRows = rows.map((row) => {
         const newRow = {};
         for (const col of columns) {
           newRow[col] = displayCell(row[col]);

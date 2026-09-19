@@ -1,265 +1,304 @@
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Design tokens. Sizes are chosen for comfortable reading of Persian text:
+   body copy never drops below 12.5px, table text stays at 13px, and every
+   interactive control on touch screens is at least 44px tall.
+   ───────────────────────────────────────────────────────────────────────────── */
 :root {
-font-family: 'Vazirmatn', sans-serif;
+  --app-font: 'Vazirmatn', 'Segoe UI', Tahoma, system-ui, sans-serif;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --tap: 44px;
 }
 
-html, body, #root {
-height: 100%;
+:root {
+  font-family: var(--app-font);
+  color-scheme: light;
 }
+
+html, body, #root { height: 100%; }
+
+html { -webkit-text-size-adjust: 100%; }
 
 body {
-  font-family: 'Vazirmatn', sans-serif;
+  font-family: var(--app-font);
   direction: rtl;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
 }
 
-.custom-scrollbar::-webkit-scrollbar {
-width: 9px;
-height: 9px;
+/* Keyboard users get a visible ring; mouse users don't get noise. */
+:focus-visible {
+  outline: 2px solid rgb(59 130 246 / 0.75);
+  outline-offset: 2px;
 }
-.custom-scrollbar::-webkit-scrollbar-track {
-background: transparent;
-}
+
+button { touch-action: manipulation; }
+
+/* Numbers should never jitter while scanning a column. */
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* ── scrollbars ────────────────────────────────────────────────────────────── */
+.custom-scrollbar::-webkit-scrollbar { width: 10px; height: 10px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-background: rgb(203 213 225 / 0.9);
-border-radius: 9999px;
-border: 2px solid transparent;
-background-clip: content-box;
+  background: rgb(203 213 225 / 0.9);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-background: rgb(148 163 184 / 0.95);
-border: 2px solid transparent;
-background-clip: content-box;
+  background: rgb(148 163 184 / 0.95);
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
-.custom-scrollbar {
-scrollbar-width: thin;
-scrollbar-color: rgb(203 213 225) transparent;
+.custom-scrollbar { scrollbar-width: thin; scrollbar-color: rgb(203 213 225) transparent; }
+
+.thin-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+.thin-scrollbar::-webkit-scrollbar-thumb { background: rgb(203 213 225); border-radius: 9999px; }
+.thin-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.thin-scrollbar { scrollbar-width: thin; }
+
+/* Horizontal chip rows must not show a scrollbar on touch devices. */
+.hide-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+
+@media (max-width: 767px) {
+  .custom-scrollbar::-webkit-scrollbar { width: 0; height: 0; }
 }
 
-body.col-resizing {
-cursor: col-resize;
-user-select: none;
--webkit-user-select: none;
+/* Column resizing: freeze the pointer everywhere while dragging. */
+body.col-resizing { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+body.col-resizing * { cursor: col-resize !important; }
+
+/* ── loading skeleton ─────────────────────────────────────────────────────── */
+@keyframes shimmer {
+  100% { transform: translateX(-100%); }
 }
-body.col-resizing * {
-cursor: col-resize !important;
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.skeleton-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(100%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.75), transparent);
+  animation: shimmer 1.4s infinite;
 }
 
-@keyframes fadeIn {
-from { opacity: 0; transform: translateY(-4px); }
-to { opacity: 1; transform: translateY(0); }
+/* ── entrances ────────────────────────────────────────────────────────────── */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
+.animate-toast-in { animation: toastIn 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
 
+@keyframes sheetUp {
+  from { opacity: 0; transform: translateY(3%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-sheet-up { animation: sheetUp 0.24s cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-pop-in { animation: popIn 0.14s ease-out; }
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-fade-in-up { animation: fadeInUp 0.3s ease-out forwards; }
+
+/* ── decorative title treatment (existing look, now motion-aware) ─────────── */
 @keyframes rainbowBreath {
-0% {
-background-position: 0% 50%;
-opacity: 0.6;
-transform: scale(0.98);
-}
-25% {
-opacity: 1;
-transform: scale(1.02);
-}
-50% {
-background-position: 100% 50%;
-opacity: 0.7;
-transform: scale(0.99);
-}
-75% {
-opacity: 1;
-transform: scale(1.01);
-}
-100% {
-background-position: 0% 50%;
-opacity: 0.6;
-transform: scale(0.98);
-}
+  0% { background-position: 0% 50%; opacity: 0.75; }
+  50% { background-position: 100% 50%; opacity: 1; }
+  100% { background-position: 0% 50%; opacity: 0.75; }
 }
 
 .rainbow-breath {
-display: inline-block;
-font-weight: 700;
-background-image: linear-gradient(
-90deg,
-#ff0000, #ff7700, #ffdd00, #00ff00, #0077ff, #8800ff, #ff00cc, #ff0000
-);
-background-size: 300% 100%;
-background-clip: text;
--webkit-background-clip: text;
-color: transparent;
-animation: rainbowBreath 4s ease-in-out infinite;
-transition: animation 0.3s;
+  display: inline-block;
+  font-weight: 700;
+  background-image: linear-gradient(90deg, #0f766e, #2563eb, #7c3aed, #db2777, #0f766e);
+  background-size: 300% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: rainbowBreath 6s ease-in-out infinite;
 }
 
+/* ── Gemini Canvas Inspired Ambient Mesh Animation ───────────────────────── */
+@keyframes geminiMeshMove {
+  0% {
+    background-position: 0% 0%, 100% 0%, 50% 100%, 0% 100%;
+  }
+  33% {
+    background-position: 30% 20%, 70% 30%, 80% 60%, 20% 90%;
+  }
+  66% {
+    background-position: 70% 40%, 30% 70%, 20% 40%, 80% 20%;
+  }
+  100% {
+    background-position: 0% 0%, 100% 0%, 50% 100%, 0% 100%;
+  }
+}
+
+.gemini-ambient-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(at 15% 15%, rgba(56, 189, 248, 0.08) 0px, transparent 45%),
+    radial-gradient(at 85% 20%, rgba(129, 140, 248, 0.07) 0px, transparent 50%),
+    radial-gradient(at 50% 80%, rgba(52, 211, 153, 0.06) 0px, transparent 45%),
+    radial-gradient(at 90% 85%, rgba(244, 114, 182, 0.05) 0px, transparent 40%);
+  background-size: 140% 140%, 150% 150%, 130% 130%, 160% 160%;
+  animation: geminiMeshMove 24s ease-in-out infinite;
+  opacity: 0.95;
+}
+
+/* ── Cyber Neon Matrix Brand Header ───────────────────────────────────────── */
 .premium-nav-matrix {
-position: relative;
-display: inline-flex;
-align-items: center;
-justify-content: center;
-padding: 0.35rem 0.85rem;
-background: rgba(16, 185, 129, 0.04);
-border: 1px solid rgba(16, 185, 129, 0.15);
-border-radius: 8px;
-overflow: hidden;
-cursor: default;
-transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-box-shadow: 0 2px 10px rgba(0, 0, 0, 0.01);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.75rem;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1.5px solid rgba(16, 185, 129, 0.45);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow:
+    0 0 14px rgba(16, 185, 129, 0.22),
+    inset 0 0 12px rgba(6, 182, 212, 0.12),
+    0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  max-width: 100%;
 }
 
 .premium-nav-matrix::after {
-content: '';
-position: absolute;
-inset: 0;
-background: linear-gradient(
-90deg,
-transparent,
-rgba(255, 255, 255, 0.4),
-transparent
-);
-transform: translateX(-150%) skewX(-15deg);
-transition: transform 0.7s ease;
-z-index: 5;
-pointer-events: none;
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.3), transparent);
+  transform: translateX(-150%) skewX(-15deg);
+  transition: transform 0.6s ease;
+  z-index: 5;
+  pointer-events: none;
 }
 
 .premium-nav-matrix:hover {
-background: rgba(15, 23, 42, 0.95);
-border-color: rgba(16, 185, 129, 0.6);
-box-shadow:
-0 4px 20px rgba(16, 185, 129, 0.25),
-inset 0 0 15px rgba(16, 185, 129, 0.15);
-transform: translateY(-1px);
+  background: rgba(15, 23, 42, 0.98);
+  border-color: rgba(52, 211, 153, 0.85);
+  box-shadow:
+    0 0 22px rgba(16, 185, 129, 0.45),
+    0 0 35px rgba(6, 182, 212, 0.25),
+    inset 0 0 18px rgba(16, 185, 129, 0.25);
+  transform: translateY(-1px);
 }
-
-.premium-nav-matrix:hover::after {
-transform: translateX(150%) skewX(-15deg);
-transition: transform 0.7s ease;
-}
+.premium-nav-matrix:hover::after { transform: translateX(150%) skewX(-15deg); }
 
 .premium-nav-matrix h1 {
-position: relative;
-margin: 0;
-font-size: clamp(0.9rem, 2vw, 1.1rem);
-font-weight: 800;
-letter-spacing: -0.2px;
-color: #334155;
-z-index: 2;
-transition: all 0.3s ease;
+  position: relative;
+  margin: 0;
+  font-size: clamp(0.85rem, 1.5vw, 1.05rem);
+  font-weight: 900;
+  letter-spacing: -0.2px;
+  color: #34d399;
+  text-shadow: 0 0 10px rgba(16, 185, 129, 0.5), 0 0 2px rgba(255, 255, 255, 0.8);
+  z-index: 2;
+  transition: color 0.25s ease, text-shadow 0.25s ease;
 }
-
 .premium-nav-matrix:hover h1 {
-color: #10b981;
-text-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
-animation: cyberGlitchText 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
-letter-spacing: 0.5px;
+  color: #a7f3d0;
+  text-shadow: 0 0 14px rgba(52, 211, 153, 0.8), 0 0 4px #ffffff;
 }
 
 .premium-nav-matrix .matrix-bg-rain {
-position: absolute;
-top: -150%;
-left: 0;
-width: 100%;
-height: 300%;
-pointer-events: none;
-opacity: 0;
-z-index: 1;
-font-family: 'Fira Code', 'Courier New', monospace;
-font-size: 8px;
-line-height: 1.2;
-color: rgba(16, 185, 129, 0.35);
-word-break: break-all;
-transition: opacity 0.4s ease;
-mask-image: linear-gradient(to bottom, transparent, black 40%, black 60%, transparent);
--webkit-mask-image: linear-gradient(to bottom, transparent, black 40%, black 60%, transparent);
+  position: absolute;
+  top: -100%;
+  left: 0;
+  width: 100%;
+  height: 250%;
+  pointer-events: none;
+  opacity: 0.35;
+  z-index: 1;
+  font-family: 'Fira Code', 'Courier New', monospace;
+  font-size: 8px;
+  line-height: 1.15;
+  color: rgba(52, 211, 153, 0.7);
+  text-shadow: 0 0 4px rgba(16, 185, 129, 0.8);
+  word-break: break-all;
+  transition: opacity 0.3s ease;
+  mask-image: linear-gradient(to bottom, transparent, black 30%, black 70%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 30%, black 70%, transparent);
+  animation: navMatrixFall 9s linear infinite;
 }
-
 .premium-nav-matrix:hover .matrix-bg-rain {
-opacity: 1;
-animation: navMatrixFall 6s linear infinite;
+  opacity: 0.75;
+  animation-duration: 4.5s;
 }
 
 @keyframes navMatrixFall {
-0% { transform: translateY(0); }
-100% { transform: translateY(-33.33%); }
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-40%); }
 }
 
-@keyframes cyberGlitchText {
-0% { transform: translate(0); }
-20% { transform: translate(-1px, 1px); color: #34d399; text-shadow: -1px 0 #10b981, 1px 0 #0f172a; }
-40% { transform: translate(1px, -1px); color: #059669; text-shadow: 1px 0 #10b981, -1px 0 #0f172a; }
-60% { transform: translate(-1px, -1px); }
-80% { transform: translate(1px, 1px); }
-100% { transform: translate(0); }
+/* ── touch / small screens ────────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  /* Native-feeling tap targets; 16px inputs stop iOS from zooming on focus. */
+  input[type="search"],
+  input[type="text"] {
+    font-size: 16px !important;
+    min-height: var(--tap);
+  }
+  button { min-height: 2rem; }
+  .premium-nav-matrix h1 { font-size: 0.85rem !important; }
+  .premium-nav-matrix { padding: 0.25rem 0.55rem; }
 }
 
-
-@media (max-width: 768px) {
-.VirtualTable th,
-table th {
-min-height: 48px !important;
-padding: 12px 8px !important;
-font-size: 14px !important;
-user-select: none;
--webkit-tap-highlight-color: transparent;
+/* ── respect motion preferences ───────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .premium-nav-matrix .matrix-bg-rain { display: none; }
+  .skeleton-shimmer::after { display: none; }
 }
 
-input[type="text"] {
-min-height: 48px !important;
-font-size: 16px !important;
-padding: 12px 36px !important;
-}
-
-}
-
-@keyframes cardFadeIn {
-0% {
-opacity: 0;
-transform: translateY(12px) scale(0.97);
-}
-100% {
-opacity: 1;
-transform: translateY(0) scale(1);
-}
-}
-
-@keyframes fadeInUp {
-from {
-opacity: 0;
-transform: translateY(20px) scale(0.8);
-}
-to {
-opacity: 1;
-transform: translateY(0) scale(1);
-}
-}
-.animate-fade-in-up {
-animation: fadeInUp 0.3s ease-out forwards;
-}
-
-main {
-padding-bottom: 8px !important;
-}
-
-.premium-nav-matrix h1 {
-font-size: 0.85rem !important;
-}
-
-.flex-wrap .inline-flex {
-margin-bottom: 4px;
-}
-
-::-webkit-scrollbar {
-width: 4px;
-height: 4px;
-}
-::-webkit-scrollbar-thumb {
-background: #94a3b8;
-border-radius: 20px;
-}
-::-webkit-scrollbar-track {
-background: transparent;
+/* ── print: give people a clean list to take to the registration office ───── */
+@media print {
+  header, footer, nav, button, [data-facet-panel], .premium-nav-matrix, .gemini-ambient-canvas {
+    display: none !important;
+  }
+  body, main {
+    background: #fff !important;
+    color: #000 !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+  .print-page-break {
+    page-break-before: always;
+  }
+  .print-avoid-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  /* Table borders in print */
+  [role="row"] {
+    border-bottom: 1px solid #cbd5e1 !important;
+    page-break-inside: avoid;
+  }
 }

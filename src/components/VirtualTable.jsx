@@ -1,221 +1,168 @@
-import React, { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+// Virtualised course table for desktop and card list for mobile.
+// All table items, headers, rows and cells are center aligned for maximum clarity.
 
-const DEFAULT_WIDTHS = {
-  '_star': 50,
-  'نام درس': 300,
-  'زمانبندي تشکيل کلاس': 400,
-  'مکان برگزاري': 350,
-  'استاد': 220,
-  'دانشجويان مجاز به اخذ کلاس': 300,
-  'كد درس': 120,
-  'كد ارائه کلاس درس': 140,
-  'تعداد واحد نظري': 100,
-  'تعداد واحد عملي': 100,
-  'حداكثر ظرفيت': 100,
-  'تعداد ثبت نامي تاكنون': 120,
-  'نوع درس': 130,
-  'نام كلاس درس': 200,
-  'ساير اساتيد': 200,
-  'زمان امتحان': 200,
-  'مقطع ارائه درس': 150,
-  'نوع ارائه': 120,
-  'سطح ارائه': 120,
-  'گروه آموزشی': 200,
-  'دانشکده': 200,
-  'واحد': 150,
-  'استان': 120,
-};
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import DesktopRow from './DesktopRow.jsx';
+import MobileCard from './MobileCard.jsx';
+import FacetPanel from './FacetPanel.jsx';
+import { ArrowUpIcon, FilterIcon, SearchIcon } from './icons.jsx';
+import { EmptyState } from './Bits.jsx';
+import { buildHighlighter, faNum, rowKeyOf } from '../lib/format.js';
+import { defaultWidthOf, fullLabelOf, labelOf } from '../lib/columns.js';
+import { useIsMobile, useScrolledPast } from '../lib/hooks.js';
 
 const MIN_COL_WIDTH = 70;
 const MAX_COL_WIDTH = 640;
-const FACET_RENDER_CAP = 300;
-const HEADER_HEIGHT = 85;
-const MOBILE_TOP_GAP = 16;
+const STAR_WIDTH = 96; // Accommodates high-contrast bookmark + compare + copy rail
 
-const normHeader = (s) => s.replace(/\u064A/g, '\u06CC').replace(/\u0643/g, '\u06A9');
-const DEFAULT_WIDTHS_BY_NORM = Object.fromEntries(
-  Object.entries(DEFAULT_WIDTHS).map(([k, v]) => [normHeader(k), v])
-);
-
-const defaultWidth = (colName) => {
-  if (colName === '_star') return 50;
-  return DEFAULT_WIDTHS_BY_NORM[normHeader(colName)] ?? 180;
+const ROW_HEIGHTS = {
+  compact: 44,
+  comfortable: 56,
+  spacious: 72,
 };
 
-const FunnelIcon = ({ className }) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
-    <path d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5z" />
-  </svg>
-);
+const HEADER_HEIGHT = 62;
+const ESTIMATED_CARD = 420;
 
-const VirtualTable = ({
-  data,
-  columns,
-  sortConfig,
+export default function VirtualTable({
+  data = [],
+  columns = [],
+  allColumns = [],
+  searchTerm = '',
+  sortConfig = { column: null, direction: 'asc' },
   onSort,
-  filters,
+  filters = {},
   onFilterChange,
-  facets,
+  facets = {},
+  facetsLoading = null,
   onEnsureFacets,
-  facetsLoading,
-  colWidths,
-  onColumnResize,
-  onWidthsCommit,
+  customColWidths = {},
+  onColumnWidthChange,
   onColumnReset,
+  onWidthsCommit,
+  density = 'comfortable',
   bookmarks = [],
-  onToggleBookmark = () => {},
-  
-}) => {
-  const parentRef = useRef();
+  onToggleBookmark,
+  onCopyRow,
+  onCompare,
+  onOpenDetail,
+  onClearFilters,
+  onClearSearch,
+  hasSearch = false,
+}) {
+  const isMobile = useIsMobile();
+  const parentRef = useRef(null);
   const [openFacet, setOpenFacet] = useState(null);
-  const [facetSearch, setFacetSearch] = useState('');
   const [draggingCol, setDraggingCol] = useState(null);
+  const dragRef = useRef({ col: null, startX: 0, startW: 0 });
 
-  const [showBackToTop, setShowBackToTop] = useState(false);
-  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
-
-  useEffect(() => {
-    const handleScroll = () => {
-      if (parentRef.current) {
-        const scrollTop = parentRef.current.scrollTop;
-        setShowBackToTop(scrollTop > 150);
-      }
-    };
-
-    const el = parentRef.current;
-    if (el) {
-      el.addEventListener('scroll', handleScroll);
-      return () => el.removeEventListener('scroll', handleScroll);
-    }
-  }, []);
-
-  useEffect(() => {
-    const handleResize = () => setWindowWidth(window.innerWidth);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
+  const highlighter = useMemo(() => buildHighlighter(searchTerm), [searchTerm]);
   const bookmarkSet = useMemo(() => new Set(bookmarks), [bookmarks]);
-  const isMobile = windowWidth < 768;
+
+  const rowHeight = ROW_HEIGHTS[density] || ROW_HEIGHTS.comfortable;
+
+  // Track the actual visible width of the table viewport to intelligently stretch columns
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = parentRef.current;
+    if (!el) return undefined;
+    const update = () => setContainerWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const baseWidthOf = useCallback(
+    (col) => customColWidths[col] ?? defaultWidthOf(col),
+    [customColWidths]
+  );
+
+  // Compute smart responsive column widths:
+  // If the viewport is wider than default widths, proportionally expand all columns to fill 100% of the screen.
+  // If user adds more columns or is on a narrow screen, preserve minimums and allow smooth horizontal scrolling.
+  const { columnWidths, effectiveTableWidth } = useMemo(() => {
+    if (!columns || columns.length === 0) {
+      return { columnWidths: {}, effectiveTableWidth: containerWidth || 1000 };
+    }
+
+    const baseSum = columns.reduce((acc, c) => acc + baseWidthOf(c), 0);
+    const totalBase = STAR_WIDTH + baseSum;
+    const targetWidth = Math.max(containerWidth, totalBase);
+    const availableDataWidth = targetWidth - STAR_WIDTH;
+
+    const scale = availableDataWidth > baseSum && baseSum > 0 ? availableDataWidth / baseSum : 1;
+
+    const widths = {};
+    let allocated = 0;
+    columns.forEach((col) => {
+      const w = Math.round(baseWidthOf(col) * scale);
+      widths[col] = w;
+      allocated += w;
+    });
+
+    // Absorb any rounding remainder on the widest column
+    const remainder = availableDataWidth - allocated;
+    if (remainder !== 0 && columns.length > 0) {
+      const widestCol = columns.reduce(
+        (a, b) => (baseWidthOf(a) >= baseWidthOf(b) ? a : b),
+        columns[0]
+      );
+      widths[widestCol] = Math.max(MIN_COL_WIDTH, widths[widestCol] + remainder);
+    }
+
+    const finalSum = STAR_WIDTH + Object.values(widths).reduce((a, b) => a + b, 0);
+    return {
+      columnWidths: widths,
+      effectiveTableWidth: Math.max(targetWidth, finalSum),
+    };
+  }, [columns, baseWidthOf, containerWidth]);
 
   const widthOf = useCallback(
-    (col) => colWidths[col] ?? defaultWidth(col),
-    [colWidths]
+    (col) => columnWidths[col] ?? baseWidthOf(col),
+    [columnWidths, baseWidthOf]
   );
 
   const cellStyle = useCallback(
-    (col) => ({
-      width: `${widthOf(col)}px`,
-      flexGrow: colWidths[col] != null ? 0 : 1,
-      flexShrink: 0,
-      direction: 'rtl',
-    }),
-    [colWidths, widthOf]
-  );
-
-  const minTableWidth = useMemo(
-    () => columns.reduce((acc, col) => acc + widthOf(col), 0),
-    [columns, widthOf]
+    (col) => {
+      const w = widthOf(col);
+      return {
+        width: `${w}px`,
+        minWidth: `${w}px`,
+        maxWidth: `${w}px`,
+        flex: `0 0 ${w}px`,
+      };
+    },
+    [widthOf]
   );
 
   const rowVirtualizer = useVirtualizer({
     count: data.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => isMobile ? 160 : 45,
-    overscan: 10,
+    estimateSize: () => (isMobile ? ESTIMATED_CARD : rowHeight),
+    getItemKey: useCallback((index) => (data[index] ? rowKeyOf(data[index]) : index), [data]),
+    overscan: isMobile ? 8 : 14,
   });
 
-  const lastScrollLeft = useRef(0);
-  const isFirstLoad = useRef(true);
-
-  const handleScroll = (e) => {
-    lastScrollLeft.current = e.target.scrollLeft;
-    setOpenFacet((prev) => (prev ? null : prev));
+  const showBackToTop = useScrolledPast(parentRef, 400);
+  const scrollToTop = () => {
+    parentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   useLayoutEffect(() => {
-    if (parentRef.current) {
-      if (isFirstLoad.current) {
-        parentRef.current.scrollTop = 0;
-      }
-      
-      if (isFirstLoad.current && data.length > 0) {
-        const maxScroll = parentRef.current.scrollWidth - parentRef.current.clientWidth;
-        parentRef.current.scrollLeft = maxScroll;
-        lastScrollLeft.current = maxScroll;
-        isFirstLoad.current = false;
-      } else if (!isFirstLoad.current) {
-        parentRef.current.scrollLeft = lastScrollLeft.current;
-      }
+    if (isMobile) return;
+    const el = parentRef.current;
+    if (el && el.scrollLeft === 0 && el.scrollWidth > el.clientWidth) {
+      el.scrollLeft = el.scrollWidth - el.clientWidth;
     }
-  }, [data]);
+  }, [isMobile, columns]);
 
-  const getRowKey = useCallback((row) => {
-    return row['كد ارائه كلاس درس'] || row['كد درس'] || `${row['نام درس']}_${row['استاد'] || 'نامشخص'}`;
-  }, []);
-
-  const startResize = (e, col) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    const startW = widthOf(col);
-    let lastW = startW;
-
-    setDraggingCol(col);
-    document.body.classList.add('col-resizing');
-
-    const onMove = (ev) => {
-      const w = Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, startW - (startX - ev.clientX)));
-      if (Math.abs(w - lastW) >= 1) {
-        lastW = w;
-        onColumnResize(col, w);
-      }
-    };
-    const onUp = (ev) => {
-      try { el.releasePointerCapture(ev.pointerId); } catch { }
-      el.removeEventListener('pointermove', onMove);
-      el.removeEventListener('pointerup', onUp);
-      el.removeEventListener('pointercancel', onUp);
-      document.body.classList.remove('col-resizing');
-      setDraggingCol(null);
-      onWidthsCommit();
-    };
-
-    el.addEventListener('pointermove', onMove);
-    el.addEventListener('pointerup', onUp);
-    el.addEventListener('pointercancel', onUp);
-  };
-
-  const toggleFacet = (e, col) => {
-    if (openFacet?.col === col) {
-      setOpenFacet(null);
-      return;
-    }
-    const rect = e.currentTarget.getBoundingClientRect();
-    const align = rect.left < window.innerWidth / 2 ? 'left' : 'right';
-    setFacetSearch('');
-    setOpenFacet({ col, align });
-    onEnsureFacets(col);
-  };
-
-  const toggleValue = (col, value) => {
-    const current = filters[col];
-    if (!current) {
-      onFilterChange(col, [value]);
-      return;
-    }
-    const set = new Set(current);
-    if (set.has(value)) set.delete(value);
-    else set.add(value);
-    onFilterChange(col, set.size ? [...set] : null);
-  };
-
+  // Dismiss open header facet when clicking outside or pressing Escape
   useEffect(() => {
-    if (!openFacet) return;
-    const onDocDown = (e) => {
+    if (!openFacet) return undefined;
+    const onDown = (e) => {
       if (!e.target.closest?.('[data-facet-panel],[data-facet-toggle]')) {
         setOpenFacet(null);
       }
@@ -223,347 +170,299 @@ const VirtualTable = ({
     const onKey = (e) => {
       if (e.key === 'Escape') setOpenFacet(null);
     };
-    document.addEventListener('pointerdown', onDocDown);
+    document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
     return () => {
-      document.removeEventListener('pointerdown', onDocDown);
+      document.removeEventListener('pointerdown', onDown);
       document.removeEventListener('keydown', onKey);
     };
   }, [openFacet]);
 
-  const renderFacetPanel = (col) => {
-    const values = facets[col] || [];
-    const q = facetSearch.trim();
-    const filtered = q ? values.filter((v) => v.value.includes(q)) : values;
-    const shown = filtered.slice(0, FACET_RENDER_CAP);
-    const selected = filters[col];
-    const selectedCount = selected?.length || 0;
+  // Column resizing handlers
+  const startResize = (e, col) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDraggingCol(col);
+    dragRef.current = { col, startX: e.clientX, startW: widthOf(col) };
 
-    return (
-      <div
-        data-facet-panel
-        onClick={(e) => e.stopPropagation()}
-        className={`absolute top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-1.25rem)] bg-white rounded-2xl shadow-2xl shadow-slate-900/25 border border-slate-200/90 overflow-hidden flex flex-col ${
-          openFacet.align === 'left' ? 'left-0' : 'right-0'
-        }`}
-      >
-        <div className="p-2 border-b border-slate-100">
-          <div className="relative">
-            <input
-              autoFocus
-              value={facetSearch}
-              onChange={(e) => setFacetSearch(e.target.value)}
-              placeholder="جستجو در مقادیر..."
-              className="w-full text-xs px-3 py-2 pr-8 rounded-lg bg-slate-100/80 border border-transparent focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-colors text-right text-slate-800 placeholder:text-slate-400"
-            />
-            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-400 select-none pointer-events-none">
-              🔍
-            </span>
-          </div>
-        </div>
+    const onPointerMove = (ev) => {
+      const { col: c, startX, startW } = dragRef.current;
+      if (!c) return;
+      const delta = startX - ev.clientX; // RTL resize delta
+      const nextW = Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, startW + delta));
+      onColumnWidthChange(c, nextW);
+    };
 
-        <div className="max-h-64 overflow-y-auto custom-scrollbar py-1">
-          {facetsLoading === col ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="animate-spin rounded-full h-6 w-6 border-2 border-blue-500 border-t-transparent" />
-            </div>
-          ) : filtered.length === 0 ? (
-            <p className="text-center text-xs text-slate-400 py-6">مقداری یافت نشد</p>
-          ) : (
-            <>
-              {shown.map((v) => {
-                const checked = selected ? selected.includes(v.value) : false;
-                return (
-                  <label
-                    key={v.value}
-                    className="flex items-center gap-2.5 px-3 py-1.5 mx-1.5 rounded-lg hover:bg-blue-50 cursor-pointer text-xs text-slate-700 transition-colors"
-                  >
-                    <input
-                      type="checkbox"
-                      className="accent-blue-600 w-3.5 h-3.5 pointer-events-none"
-                      checked={checked}
-                      onChange={() => toggleValue(col, v.value)}
-                    />
-                    <span className="flex-1 truncate" title={v.value}>{v.value}</span>
-                    <span className="text-[10px] text-slate-400 font-bold tabular-nums whitespace-nowrap">
-                      {v.count.toLocaleString('fa-IR')}
-                    </span>
-                  </label>
-                );
-              })}
-              {filtered.length > FACET_RENDER_CAP && (
-                <p className="text-center text-[10px] text-slate-400 py-2">
-                  برای دیدن بقیه، جستجو کنید…
-                </p>
-              )}
-            </>
-          )}
-        </div>
+    const onPointerUp = () => {
+      setDraggingCol(null);
+      dragRef.current = { col: null, startX: 0, startW: 0 };
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      onWidthsCommit();
+    };
 
-        <div className="flex items-center justify-between gap-2 px-3 py-2 border-t border-slate-100 bg-slate-50/80 text-[11px]">
-          <span className="text-slate-400">
-            {selectedCount ? `${selectedCount.toLocaleString('fa-IR')} مقدار انتخاب شد` : 'همه مقادیر نمایش داده می‌شوند'}
-          </span>
-          {selectedCount > 0 && (
-            <button
-              onClick={() => onFilterChange(col, null)}
-              className="font-bold text-red-500 hover:text-red-600 transition-colors"
-            >
-              ✕ حذف فیلتر
-            </button>
-          )}
-        </div>
-      </div>
-    );
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  };
+
+  const toggleFacet = (e, col) => {
+    e.stopPropagation();
+    if (openFacet === col) {
+      setOpenFacet(null);
+    } else {
+      setOpenFacet(col);
+      onEnsureFacets(col);
+    }
   };
 
   return (
-    <div className="h-full w-full overflow-hidden">
+    <div className="relative flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
+      {/* Scrollable Virtual Container without contain:strict to prevent clipping dropdowns */}
       <div
         ref={parentRef}
-        onScroll={handleScroll}
-        className={`h-full w-full ${isMobile ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto'} bg-white custom-scrollbar`}
-        style={{ direction: 'ltr' }}
+        className="relative h-full min-h-0 w-full flex-1 overflow-auto bg-white thin-scrollbar"
+        tabIndex={0}
+        aria-label="جدول دروس"
       >
-        {showBackToTop && isMobile && (
-          <button
-            onClick={() => {
-              if (parentRef.current) {
-                parentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            }}
-            className="fixed bottom-20 right-4 z-50 bg-blue-600 text-white rounded-full shadow-2xl shadow-blue-500/50 p-3 transition-all hover:bg-blue-700 active:scale-95 animate-fade-in-up"
-            aria-label="بازگشت به بالا"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
-            </svg>
-          </button>
-        )}
-
         <div
           style={{
-            height: `${rowVirtualizer.getTotalSize() + (isMobile ? MOBILE_TOP_GAP : HEADER_HEIGHT)}px`,
-            width: '100%',
-            minWidth: isMobile ? '100%' : `${minTableWidth}px`,
+            height: `${rowVirtualizer.getTotalSize() + (isMobile ? 0 : HEADER_HEIGHT)}px`,
+            width: isMobile ? '100%' : `${effectiveTableWidth}px`,
+            minWidth: '100%',
             position: 'relative',
             direction: 'ltr',
           }}
         >
-          <div className={`sticky top-0 z-30 flex h-20 bg-slate-900/95 backdrop-blur text-white shadow-lg shadow-slate-900/20 w-full ${isMobile ? 'hidden' : ''}`}>
-            {['_star', ...columns].reverse().map((col) => {
-              if (col === '_star') {
+          {/* Desktop Table Header */}
+          {!isMobile && (
+            <div
+              className="sticky top-0 z-30 flex border-b border-slate-700/60 bg-slate-800 text-white"
+              style={{
+                height: `${HEADER_HEIGHT}px`,
+                width: `${effectiveTableWidth}px`,
+                minWidth: '100%',
+              }}
+              role="row"
+            >
+              {/* Action rail header */}
+              <div
+                className="flex shrink-0 items-center justify-center border-e border-slate-700/50 bg-slate-800"
+                style={{
+                  width: `${STAR_WIDTH}px`,
+                  minWidth: `${STAR_WIDTH}px`,
+                  maxWidth: `${STAR_WIDTH}px`,
+                  flex: `0 0 ${STAR_WIDTH}px`,
+                }}
+                role="columnheader"
+                aria-label="عملیات و نشانه‌گذاری"
+              >
+                <span className="text-[14px] font-bold text-slate-300">عملیات</span>
+              </div>
+
+              {/* Data column headers */}
+              {[...columns].reverse().map((col) => {
+                const isActive = sortConfig.column === col;
+                const dir = sortConfig.direction;
+                const selectedCount = filters[col]?.length || 0;
+
                 return (
                   <div
                     key={col}
-                    style={{ width: '50px', flexShrink: 0, direction: 'rtl' }}
-                    className="relative border-l border-slate-700/60 flex items-center justify-center bg-slate-900/95 px-1"
+                    role="columnheader"
+                    aria-sort={isActive ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                    style={cellStyle(col)}
+                    className="group/header relative flex shrink-0 items-center justify-center border-e border-slate-700/50 bg-slate-800 px-2 transition-colors hover:bg-slate-700/70"
                   >
-                    <span className="text-white text-sm">⭐</span>
+                    <button
+                      type="button"
+                      onClick={() => onSort(col)}
+                      title={`مرتب‌سازی بر اساس ${fullLabelOf(col)}`}
+                      className="flex min-h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-1 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/70"
+                    >
+                      <span
+                        className={`grid size-5 shrink-0 place-items-center rounded text-[13px] ${
+                          isActive ? 'text-blue-300' : 'text-slate-400 opacity-0 transition-opacity group-hover/header:opacity-100'
+                        }`}
+                        aria-hidden="true"
+                      >
+                        {isActive ? (dir === 'asc' ? '▲' : '▼') : '⇅'}
+                      </span>
+                      <span
+                        className={`min-w-0 text-center text-[12.5px] font-bold leading-[1.25] text-slate-100 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] ${
+                          isActive ? 'font-extrabold text-white' : ''
+                        }`}
+                      >
+                        {labelOf(col)}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      data-facet-toggle
+                      onClick={(e) => toggleFacet(e, col)}
+                      aria-label={`فیلتر ${fullLabelOf(col)}`}
+                      aria-expanded={openFacet === col}
+                      title={`فیلتر ${fullLabelOf(col)}`}
+                      className={`relative grid size-7 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/70 ${
+                        selectedCount
+                          ? 'bg-blue-500 text-white shadow-sm shadow-blue-500/40'
+                          : 'bg-white/10 text-slate-300 hover:bg-white/25'
+                      }`}
+                    >
+                      <FilterIcon className="size-3.5" />
+                      {selectedCount > 0 && (
+                        <span className="absolute -end-1 -top-1 grid size-4 place-items-center rounded-full bg-emerald-400 text-[9px] font-black text-slate-900 ring-2 ring-slate-800">
+                          {faNum(selectedCount)}
+                        </span>
+                      )}
+                    </button>
+
+                    {/* Popover facet dropdown anchored to the header cell */}
+                    {openFacet === col && (
+                      <div className="absolute top-full end-0 z-50">
+                        <FacetPanel
+                          column={col}
+                          values={facets[col] || []}
+                          loading={!facets[col] && facetsLoading === col}
+                          selected={filters[col] || []}
+                          onToggle={(v) => {
+                            const current = filters[col] || [];
+                            const next = current.includes(v) ? current.filter((x) => x !== v) : [...current, v];
+                            onFilterChange(col, next.length ? next : null);
+                          }}
+                          onClear={() => onFilterChange(col, null)}
+                          onClose={() => setOpenFacet(null)}
+                          variant="dropdown"
+                          autoFocus
+                        />
+                      </div>
+                    )}
+
+                    {/* Column Resizer Handle */}
+                    <div
+                      onPointerDown={(e) => startResize(e, col)}
+                      onDoubleClick={(e) => { e.stopPropagation(); onColumnReset(col); onWidthsCommit(); }}
+                      onClick={(e) => e.stopPropagation()}
+                      role="separator"
+                      aria-label={`تغییر عرض ستون ${fullLabelOf(col)}`}
+                      title="کشیدن = تغییر عرض · دوبار کلیک = پیش‌فرض"
+                      className="absolute end-0 top-0 z-20 flex h-full w-3.5 translate-x-1/2 cursor-col-resize touch-none items-center justify-center"
+                    >
+                      <span className={`h-8 w-[3px] rounded-full transition-colors ${
+                        draggingCol === col ? 'bg-blue-400' : 'bg-transparent group-hover/header:bg-slate-500'
+                      }`} />
+                    </div>
                   </div>
                 );
-              }
-              const isActiveFilter = filters[col]?.length > 0;
-              return (
-                <div
-                  key={col}
-                  onClick={() => onSort(col)}
-                  style={cellStyle(col)}
-                  className="relative border-l border-slate-700/60 flex items-center justify-center hover:bg-slate-700/50 transition-colors select-none group/header cursor-pointer px-2"
-                >
-                  <button
-                    data-facet-toggle
-                    onClick={(e) => { e.stopPropagation(); toggleFacet(e, col); }}
-                    title={`فیلتر ${col}`}
-                    className={`relative shrink-0 w-6 h-6 rounded-lg flex items-center justify-center transition-all ${
-                      isActiveFilter
-                        ? 'bg-blue-500 text-white shadow-md shadow-blue-500/40'
-                        : 'bg-white/10 hover:bg-white/25 text-slate-300'
-                    }`}
-                  >
-                    <FunnelIcon className="w-3.5 h-3.5" />
-                    {isActiveFilter && (
-                      <span className="absolute -top-1 -left-1 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-slate-900" />
-                    )}
-                  </button>
+              })}
+            </div>
+          )}
 
-                  <div className="flex flex-row-reverse items-center gap-2 justify-center flex-1 min-w-0">
-                    <div className="flex flex-col items-center justify-center min-w-[14px]">
-                      {sortConfig.column === col ? (
-                        <span className="text-blue-400 text-base animate-pulse">
-                          {sortConfig.direction === 'asc' ? '▴' : '▾'}
-                        </span>
-                      ) : (
-                        <div className="flex flex-col -space-y-1 opacity-25 group-hover/header:opacity-80 transition-opacity">
-                          <span className="text-[18px]">▴</span>
-                          <span className="text-[18px]">▾</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <span className="break-words leading-tight text-[12px] md:text-[13px]">{col}</span>
-                  </div>
-
-                  {openFacet?.col === col && renderFacetPanel(col)}
-
-                  <div
-                    onPointerDown={(e) => startResize(e, col)}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      onColumnReset(col);
-                      onWidthsCommit();
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    title="کشیدن = تغییر عرض · دوبار کلیک = پیش‌فرض"
-                    className="absolute right-0 translate-x-1/2 top-0 h-full w-[14px] cursor-col-resize touch-none z-20 flex items-center justify-center"
-                  >
-                    <span
-                      className={`w-[3px] h-9 rounded-full transition-colors ${
-                        draggingCol === col
-                          ? 'bg-blue-400'
-                          : 'bg-transparent group-hover/header:bg-slate-500'
-                      }`}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {}
+          {/* Virtual Rows */}
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const row = data[virtualRow.index];
-            const rowKey = getRowKey(row);
+            if (!row) return null;
+            const rowKey = rowKeyOf(row);
             const isBookmarked = bookmarkSet.has(rowKey);
 
             return (
               <div
                 key={virtualRow.key}
+                ref={isMobile ? rowVirtualizer.measureElement : undefined}
                 data-index={virtualRow.index}
-                ref={isMobile ? rowVirtualizer.measureElement : null}
-                className={`absolute top-0 left-0 w-full transition-colors duration-150 ${
-                  isMobile
-                    ? 'px-2'
-                    : `border-b border-slate-100 flex items-center ${
-                        virtualRow.index % 2 === 0 ? 'bg-white' : 'bg-slate-50/70'
-                      } hover:bg-blue-50/70`
-                }`}
                 style={{
-                  transform: `translateY(${virtualRow.start + (isMobile ? MOBILE_TOP_GAP : HEADER_HEIGHT)}px)`,
-                  ...(isMobile ? { paddingBottom: '12px', height: 'auto' } : { height: `${virtualRow.size}px` }),
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${virtualRow.start + (isMobile ? 0 : HEADER_HEIGHT)}px)`,
                 }}
               >
                 {isMobile ? (
-                  <div className="bg-white rounded-2xl shadow-sm shadow-slate-200/60 border border-slate-200/80 p-4 w-full h-full">
-                    
-                    <div className="flex flex-row-reverse justify-between items-start mb-4 pb-3 border-b border-slate-100/80">
-                      <div className="flex-1 text-right min-w-0 pl-3">
-                        <h3 className="text-[13px] font-extrabold text-slate-800 break-words whitespace-normal leading-relaxed">{row['نام درس'] || 'بدون نام'}</h3>
-                        <p className="text-[11px] text-blue-600 font-bold mt-1.5 break-words whitespace-normal leading-relaxed">{row['استاد'] || 'نامشخص'}</p>
-                      </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleBookmark(rowKey);
-                        }}
-                        className={`text-xl transition-all transform hover:scale-110 flex-shrink-0 mt-0.5 ${
-                          isBookmarked ? 'text-red-500' : 'text-slate-300'
-                        }`}
-                      >
-                        {isBookmarked ? '❤️' : '🤍'}
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 text-[11px] w-full mb-3" dir="rtl">
-                      {columns.map((col) => {
-                        if (['نام درس', 'استاد', 'زمانبندي تشكيل كلاس', 'زمان امتحان'].includes(col)) return null;
-                        return (
-                          <div key={col} className="flex flex-col items-start text-right min-w-0 w-full">
-                            <span className="text-[10px] font-bold text-slate-400 mb-1 break-words whitespace-normal leading-tight">
-                              {col}
-                            </span>
-                            <span className="text-slate-700 font-medium break-words whitespace-normal leading-relaxed w-full">
-                              {row[col] || '---'}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <div className="flex flex-col gap-2 pt-3 border-t border-slate-100/80 w-full" dir="rtl">
-                      
-                      {columns.includes('زمانبندي تشكيل كلاس') && (
-                        <div className="flex items-start gap-2.5 bg-blue-50/60 p-2.5 rounded-xl text-right w-full">
-                          <span className="text-blue-500 mt-0.5 text-base flex-shrink-0">🗓️</span>
-                          <div className="flex flex-col flex-1 min-w-0">
-                            <span className="text-[10px] font-extrabold text-blue-600 mb-0.5">زمانبندي تشكيل كلاس</span>
-                            <span className="text-slate-700 text-[11px] font-medium leading-relaxed break-words whitespace-normal w-full">
-                              {row['زمانبندي تشكيل كلاس'] || '---'}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-
-                      {columns.includes('زمان امتحان') && (
-                        <div className="flex items-start gap-2.5 bg-amber-50/60 p-2.5 rounded-xl text-right w-full">
-                          <span className="text-amber-500 mt-0.5 text-base flex-shrink-0">⚠️</span>
-                          <div className="flex flex-col flex-1 min-w-0">
-                            <span className="text-[10px] font-extrabold text-amber-600 mb-0.5">زمان امتحان</span>
-                            <span className="text-slate-700 text-[11px] font-medium leading-relaxed break-words whitespace-normal w-full">
-                              {row['زمان امتحان'] || '---'}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-
-                    </div>
+                  <div className="px-2.5 py-1.5 sm:px-3 sm:py-2">
+                    <MobileCard
+                      row={row}
+                      index={virtualRow.index}
+                      rowKey={rowKey}
+                      isBookmarked={isBookmarked}
+                      onToggleBookmark={onToggleBookmark}
+                      onCopy={onCopyRow}
+                      onCompare={onCompare}
+                      onOpenDetail={onOpenDetail}
+                      highlighter={highlighter}
+                      availableColumns={allColumns.length > 0 ? allColumns : columns}
+                    />
                   </div>
                 ) : (
-                  <div className="w-full h-full flex items-center">
-                    {['_star', ...columns].reverse().map((col) => {
-                      if (col === '_star') {
-                        return (
-                          <div
-                            key={col}
-                            style={{ width: '50px', flexShrink: 0, direction: 'rtl' }}
-                            className="px-1 flex items-center justify-center border-l border-slate-100/80 last:border-l-0 h-full"
-                          >
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onToggleBookmark(rowKey);
-                              }}
-                              className={`text-xl transition-all transform hover:scale-125 ${
-                                isBookmarked ? 'text-red-500' : 'text-slate-300 hover:text-red-300'
-                              }`}
-                              title={isBookmarked ? 'حذف از علاقه‌مندی‌ها' : 'افزودن به علاقه‌مندی‌ها'}
-                            >
-                              {isBookmarked ? '❤️' : '🤍'}
-                            </button>
-                          </div>
-                        );
-                      }
-                      return (
-                        <div
-                          key={col}
-                          style={cellStyle(col)}
-                          className="px-2 md:px-3 text-[11px] md:text-[12px] text-slate-600 font-medium flex items-center justify-center text-center border-l border-slate-100/80 last:border-l-0 overflow-hidden h-full"
-                        >
-                          <span className="break-words w-full leading-relaxed block overflow-hidden whitespace-normal">
-                            {row[col] || '---'}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <DesktopRow
+                    row={row}
+                    columns={columns}
+                    cellStyle={cellStyle}
+                    starWidth={STAR_WIDTH}
+                    rowHeight={rowHeight}
+                    isBookmarked={isBookmarked}
+                    onToggleBookmark={onToggleBookmark}
+                    onCopy={onCopyRow}
+                    onCompare={onCompare}
+                    onOpenDetail={onOpenDetail}
+                    rowKey={rowKey}
+                    striped={virtualRow.index % 2 === 0}
+                    highlighter={highlighter}
+                    density={density}
+                  />
                 )}
               </div>
             );
           })}
         </div>
+
+        {/* Empty State with action buttons */}
+        {data.length === 0 && (
+          <EmptyState
+            title="هیچ درسی با این مشخصات یافت نشد"
+            hint={
+              hasSearch || Object.keys(filters).length
+                ? 'فیلترها یا عبارت جستجو را تغییر دهید تا نتایج نمایش داده شوند.'
+                : 'در حال حاضر هیچ ردیفی برای نمایش وجود ندارد.'
+            }
+            actions={
+              <>
+                {hasSearch && (
+                  <button
+                    type="button"
+                    onClick={onClearSearch}
+                    className="inline-flex min-h-9 items-center gap-1 rounded-xl bg-blue-600 px-3 text-[12.5px] font-bold text-white transition-colors hover:bg-blue-700"
+                  >
+                    پاک کردن جستجو
+                  </button>
+                )}
+                {Object.keys(filters).length > 0 && (
+                  <button
+                    type="button"
+                    onClick={onClearFilters}
+                    className="inline-flex min-h-9 items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 text-[12.5px] font-bold text-slate-700 transition-colors hover:bg-slate-50"
+                  >
+                    حذف فیلترها
+                  </button>
+                )}
+              </>
+            }
+          />
+        )}
       </div>
+
+      {/* Back to Top floating button */}
+      {showBackToTop && (
+        <button
+          type="button"
+          onClick={scrollToTop}
+          aria-label="بازگشت به ابتدای جدول"
+          title="بازگشت به ابتدا"
+          className="fixed bottom-6 end-6 z-40 grid size-11 place-items-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-600/30 transition-all hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/80 active:scale-95"
+        >
+          <ArrowUpIcon className="size-5" />
+        </button>
+      )}
     </div>
   );
-};
-
-export default VirtualTable;
+}
