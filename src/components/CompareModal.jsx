@@ -4,7 +4,7 @@
 
 import React, { useMemo } from 'react';
 import { CloseIcon, UserIcon, ClockIcon, PinIcon, CheckIcon } from './icons.jsx';
-import { faNum, rowKeyOf } from '../lib/format.js';
+import { faNum, rowKeyOf, genderOf, GENDER_LABEL, isBlank } from '../lib/format.js';
 import { parseSchedule, parseExam, toFaDigits } from '../lib/datetime.js';
 import { canonical } from '../lib/columns.js';
 
@@ -79,6 +79,8 @@ export default function CompareModal({
               const code = sec['كد ارائه كلاس درس'] || '';
               const capacity = sec['حداكثر ظرفيت'] || '-';
               const room = sec['مكان برگزاري'] || '';
+              const gender = genderOf(sec);
+              const classNote = isBlank(sec['نام كلاس درس']) ? '' : String(sec['نام كلاس درس']).trim();
 
               return (
                 <div
@@ -100,6 +102,15 @@ export default function CompareModal({
                           <UserIcon className="size-4 text-slate-400" />
                           <span>{instructor}</span>
                         </div>
+                        {gender && (
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10.5px] font-black ${
+                              gender === 'female' ? 'bg-pink-100 text-pink-700' : 'bg-sky-100 text-sky-700'
+                            }`}
+                          >
+                            {GENDER_LABEL[gender]}
+                          </span>
+                        )}
                       </div>
 
                       {isSelected && (
@@ -112,6 +123,13 @@ export default function CompareModal({
 
                     {/* Section Details */}
                     <div className="my-3 space-y-2 text-xs text-slate-600">
+                      {classNote && (
+                        <div>
+                          <span className="text-[11px] font-bold text-slate-400">نام کلاس / توضیحات:</span>
+                          <div className="mt-0.5 font-bold text-slate-800">{classNote}</div>
+                        </div>
+                      )}
+
                       <div>
                         <span className="text-[11px] font-bold text-slate-400">ساعت کلاس:</span>
                         <div className="mt-0.5 font-bold text-slate-800 flex items-center gap-1">

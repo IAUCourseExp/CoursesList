@@ -137,3 +137,15 @@ export const sortLabel = (sortConfig) => {
   if (!sortConfig?.column) return 'پیش‌فرض (ترتیب فایل)';
   return `${labelOf(sortConfig.column)} - ${sortConfig.direction === 'asc' ? 'صعودی' : 'نزولی'}`;
 };
+
+
+/** Gender of a section, read from the free-text "نام كلاس درس" column.
+ *  Also catches typos like "خوهران" / "برادرا". Returns 'female' | 'male' | null. */
+export const genderOf = (row) => {
+  const note = String(row?.['نام كلاس درس'] ?? '');
+  if (/خو?اهر/.test(note)) return 'female';
+  if (/برادر/.test(note)) return 'male';
+  return null;
+};
+
+export const GENDER_LABEL = { female: 'خواهران', male: 'برادران' };
