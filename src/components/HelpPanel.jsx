@@ -86,50 +86,84 @@ export default function HelpPanel({ onClose, onStartTour }) {
         </header>
 
         {/* Navigation Tabs */}
-        <div className="flex border-b border-slate-200 bg-white px-3 py-2 gap-1 overflow-x-auto thin-scrollbar">
+        <div className="flex border-b border-slate-200 bg-white px-3 gap-1 overflow-x-auto overflow-y-hidden thin-scrollbar flex-shrink-0" role="tablist" aria-label="بخش‌های راهنما" style={{ height: 44, minHeight: 44, maxHeight: 44, lineHeight: 0, alignItems: 'center', overflow: 'hidden' }}>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'regulations'}
             onClick={() => setActiveTab('regulations')}
-            className={`whitespace-nowrap rounded-xl px-3.5 py-1.5 text-xs font-black transition-all ${
+            className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-black transition-all flex items-center gap-1.5 shrink-0 ${
               activeTab === 'regulations'
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'text-slate-600 hover:bg-slate-100'
             }`}
+            title="قوانین و مقررات آموزشی"
+            aria-label="قوانین و مقررات آموزشی"
+            style={{ height: 36, lineHeight: '36px', padding: '0 12px', appearance: 'none', border: 'none', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}
           >
-            📜 قوانین و مقررات آموزشی
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ display: 'block' }}>
+              <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8z"/>
+              <path fill="currentColor" d="M11 16.5c-0.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm6 0c-0.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm-3-4.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5-1.12-2.5-2.5-2.5-2.5 1.12-2.5 2.5z"/>
+            </svg>
+            <span className="hidden sm:inline">قوانین و مقررات آموزشی</span>
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'features'}
             onClick={() => setActiveTab('features')}
-            className={`whitespace-nowrap rounded-xl px-3.5 py-1.5 text-xs font-black transition-all ${
+            className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-black transition-all flex items-center gap-1.5 shrink-0 ${
               activeTab === 'features'
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'text-slate-600 hover:bg-slate-100'
             }`}
+            title="امکانات هوشمند سامانه"
+            aria-label="امکانات هوشمند سامانه"
+            style={{ height: 36, lineHeight: '36px', padding: '0 12px', appearance: 'none', border: 'none', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}
           >
-            ⚡ امکانات هوشمند سامانه
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ display: 'block' }}>
+              <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.24c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/>
+            </svg>
+            <span className="hidden sm:inline">امکانات هوشمند سامانه</span>
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'shortcuts'}
             onClick={() => setActiveTab('shortcuts')}
-            className={`whitespace-nowrap rounded-xl px-3.5 py-1.5 text-xs font-black transition-all ${
+            className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-black transition-all flex items-center gap-1.5 shrink-0 ${
               activeTab === 'shortcuts'
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'text-slate-600 hover:bg-slate-100'
             }`}
+            title="کلیدهای میانبر"
+            aria-label="کلیدهای میانبر"
+            style={{ height: 36, lineHeight: '36px', padding: '0 12px', appearance: 'none', border: 'none', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}
           >
-            ⌨️ کلیدهای میانبر
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ display: 'block' }}>
+              <path fill="currentColor" d="M21 5H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H3V7h18v14zm-2-12H5c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h14c.55 0 1-.45 1-1V5c0-.55-.45-1-1-1zm0 12H5V5h14v10z"/>
+            </svg>
+            <span className="hidden sm:inline">کلیدهای میانبر</span>
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'channels'}
             onClick={() => setActiveTab('channels')}
-            className={`whitespace-nowrap rounded-xl px-3.5 py-1.5 text-xs font-black transition-all ${
+            className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-black transition-all flex items-center gap-1.5 shrink-0 ${
               activeTab === 'channels'
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'text-slate-600 hover:bg-slate-100'
             }`}
+            title="کانال‌های تلگرام و منابع"
+            aria-label="کانال‌های تلگرام و منابع"
+            style={{ height: 36, lineHeight: '36px', padding: '0 12px', appearance: 'none', border: 'none', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}
           >
-            📢 کانال‌های تلگرام و منابع
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ display: 'block' }}>
+              <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8z"/>
+              <path fill="currentColor" d="M11 16.5c-0.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm6 0c-0.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm-3-4.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5-1.12-2.5-2.5-2.5-2.5 1.12-2.5 2.5z"/>
+            </svg>
+            <span className="hidden sm:inline">کانال‌های تلگرام و منابع</span>
           </button>
         </div>
 
