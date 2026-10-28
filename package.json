@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "verify": "node scripts/verify-worker.mjs && node scripts/verify-datetime.mjs && node scripts/verify-megafeatures.mjs",
+    "verify": "node scripts/verify-worker.mjs && node scripts/verify-datetime.mjs && node scripts/verify-timesource.mjs && node scripts/verify-megafeatures.mjs",
     "preview": "vite preview",
     "deploy-all": "git add . && git commit -m 'update' && git push origin main && npm run generate-time && npm run build && npx gh-pages -d dist",
     "generate-time": "node scripts/generate-build-time.js"

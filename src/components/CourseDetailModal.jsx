@@ -30,10 +30,9 @@ import {
   parseSchedule,
   toFaDigits,
   formatJalaliWithWeekday,
-  daysUntil,
-  relativeDayLabel,
 } from '../lib/datetime.js';
 import { useScrollLock } from '../lib/hooks.js';
+import { ExamCountdownBadge, ExamCountdownDetails } from './ExamCountdown.jsx';
 
 export default function CourseDetailModal({
   course,
@@ -60,7 +59,6 @@ export default function CourseDetailModal({
   const tone = fillTone(capacity.pct);
   const exam = parseExam(course['زمان امتحان']);
   const schedule = parseSchedule(course['زمانبندي تشكيل كلاس']);
-  const examDays = exam ? daysUntil(exam.date) : null;
   const examWhen = exam ? formatJalaliWithWeekday(exam.jy, exam.jm, exam.jd) : null;
 
   const nUnits = (v) =>
@@ -211,15 +209,7 @@ export default function CourseDetailModal({
                   <CalendarIcon className="size-4 text-amber-600" />
                   <span>برنامه امتحان پایان‌ترم</span>
                 </div>
-                {examDays !== null && examDays >= 0 && (
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10.5px] font-black ${
-                      examDays <= 3 ? 'bg-rose-100 text-rose-800 animate-pulse' : 'bg-amber-100 text-amber-800'
-                    }`}
-                  >
-                    {relativeDayLabel(examDays)}
-                  </span>
-                )}
+                <ExamCountdownBadge exam={exam} />
               </div>
               <p className="text-sm font-extrabold text-slate-900 leading-relaxed">
                 {exam ? course['زمان امتحان'] : 'هنوز زمان امتحان اعلام نشده است'}
@@ -229,6 +219,7 @@ export default function CourseDetailModal({
                   {examWhen.weekday} {examWhen.label} · میلادی: {examWhen.gregorianShort}
                 </p>
               )}
+              <ExamCountdownDetails exam={exam} />
             </div>
           </div>
 

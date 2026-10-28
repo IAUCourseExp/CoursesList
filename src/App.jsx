@@ -19,6 +19,7 @@ import {
 import { faNum, courseToText, sortLabel, rowKeyOf } from './lib/format.js';
 import { labelOf, pickColumns, resolveVisibleColumns, QUICK_FILTER_COLUMNS, isPhantom } from './lib/columns.js';
 import { detectConflicts, calculateUnits, generateIcsCalendar } from './lib/conflicts.js';
+import { timeSource } from './lib/timeSource.js';
 import { useDebounced, useIsMobile, useOnMount } from './lib/hooks.js';
 import {
   readJson, writeJson, readString, writeString, hasSeenTour,
@@ -134,6 +135,13 @@ function App() {
 
     worker.onmessage = (e) => {
       const { type, payload } = e.data;
+
+      // Every data.csv response also carries the server's Date header - feed it
+      // to the trusted-clock consensus as the highest-quality free sample.
+      if (payload?.timeSample) {
+        const { dateHeader, t0, t1 } = payload.timeSample;
+        timeSource.addHeaderSample('data.csv', dateHeader, t0, t1);
+      }
 
       if (type === 'DATA_LOADED') {
         const fullRows = payload.data || [];

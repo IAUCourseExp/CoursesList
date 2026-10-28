@@ -187,7 +187,7 @@ export const parseSchedule = (value) => {
   };
 };
 
-/** "1405/10/05 از 08:00 تا 10:00" → { jy, jm, jd, date, gregorian, from, to, … } */
+/** "1405/10/05 از 08:00 تا 10:00" → { jy, jm, jd, date, startAt, endAt, from, to, … } */
 export const parseExam = (value) => {
   const raw = String(value ?? '').trim();
   if (!raw) return null;
@@ -199,9 +199,16 @@ export const parseExam = (value) => {
   const date = jalaliToDate(jy, jm, jd);
   if (!date) return null;
   const time = raw.match(TIME_RE);
+  // Exact UTC instants of the Tehran wall-clock times: `date` is UTC midnight of
+  // the Jalali day, so Tehran HH:MM = UTC midnight + (minutes − 210). All exam
+  // dates in the data are post-2022 where Iran has no DST, so this is exact.
+  const startMin = minutesOfDay(time ? time[1] : null);
+  const endMin = minutesOfDay(time ? time[2] : null);
   return {
     jy, jm, jd,
     date,
+    startAt: startMin !== null ? date.getTime() + (startMin - TEHRAN_OFFSET_MIN) * 60000 : null,
+    endAt: endMin !== null ? date.getTime() + (endMin - TEHRAN_OFFSET_MIN) * 60000 : null,
     from: time ? time[1] : '',
     to: time ? time[2] : '',
     sortKey: jalaliSortKey(jy, jm, jd),
@@ -247,11 +254,41 @@ export const formatJalaliWithWeekday = (jy, jm, jd) => {
   };
 };
 
-/** Whole-day difference from today (Asia/Tehran-agnostic; UTC midnights). */
+// ── Asia/Tehran wall clock ────────────────────────────────────────────────────
+// Iran's last DST transition was the fall-back on 1400/06/30 (2021-09-21);
+// DST was then abolished entirely, so Iran has stayed on fixed UTC+03:30 ever
+// since. Every exam date in data.csv (1404–1405 → 2025–2027) is far after that
+// changeover, so a constant offset is exact for all of them. Exam times in the
+// CSV are Tehran wall-clock times.
+export const TEHRAN_OFFSET_MIN = 210; // 3h30m ahead of UTC
+
+/**
+ * Tehran calendar date for an instant, expressed as a UTC-midnight epoch —
+ * the same shape `jalaliToDate` produces, so it can be diffed against exam
+ * dates directly. Correct regardless of the device's own timezone, unlike the
+ * previous device-local arithmetic this replaces.
+ */
+export const tehranToday = (nowMs = Date.now()) => {
+  const shifted = new Date(nowMs + TEHRAN_OFFSET_MIN * 60000);
+  return Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate());
+};
+
+/** Whole-day difference between a Tehran day and "today" in Tehran. */
 export const daysUntil = (date, now = new Date()) => {
   if (!date) return null;
-  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  return Math.round((date.getTime() - today) / 86400000);
+  const nowMs = now instanceof Date ? now.getTime() : now;
+  return Math.round((date.getTime() - tehranToday(nowMs)) / 86400000);
+};
+
+/** Tehran day as a plain integer (days since epoch), stable snapshot for tickers. */
+export const tehranDayKey = (nowMs = Date.now()) => tehranToday(nowMs) / 86400000;
+
+// ── Exam lifecycle (live countdown) ──────────────────────────────────────────
+const minutesOfDay = (t) => {
+  if (!t) return null;
+  const [h, m] = t.split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m) || h > 23 || m > 59) return null;
+  return h * 60 + m;
 };
 
 /** Human relative label: "امروز"، "فردا"، "۳ روز دیگر"، "۱۲ روز پیش". */
@@ -262,4 +299,38 @@ export const relativeDayLabel = (days) => {
   if (days === -1) return 'دیروز';
   if (days > 1) return `${toFaDigits(days)} روز دیگر`;
   return `${toFaDigits(Math.abs(days))} روز پیش`;
+};
+
+/**
+ * Lifecycle of an exam relative to "now": 'upcoming' → 'ongoing' (between the
+ * از and تا times) → 'finished'. 'unknown' only when the cell carried no
+ * parsable time, so callers can fall back to day-granularity labels.
+ */
+export const examStatus = (startAt, endAt, nowMs = Date.now()) => {
+  if (startAt === null && endAt === null) return 'unknown';
+  if (startAt !== null && nowMs < startAt) return 'upcoming';
+  if (endAt !== null && nowMs > endAt) return 'finished';
+  return 'ongoing';
+};
+
+/** Split a non-negative duration into whole days/hours/minutes/seconds. */
+export const splitDuration = (ms) => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return {
+    days: Math.floor(total / 86400),
+    hours: Math.floor((total % 86400) / 3600),
+    minutes: Math.floor((total % 3600) / 60),
+    seconds: total % 60,
+  };
+};
+
+/** "۲ روز و ۵ ساعت و ۳ دقیقه" — drops zero units; seconds appear under a day out. */
+export const faCountdownLabel = (parts) => {
+  if (!parts) return '';
+  const seg = [];
+  if (parts.days > 0) seg.push(`${toFaDigits(parts.days)} روز`);
+  if (parts.hours > 0) seg.push(`${toFaDigits(parts.hours)} ساعت`);
+  if (parts.minutes > 0 || parts.days === 0) seg.push(`${toFaDigits(parts.minutes)} دقیقه`);
+  if (parts.days === 0) seg.push(`${toFaDigits(parts.seconds)} ثانیه`);
+  return seg.join(' و ');
 };

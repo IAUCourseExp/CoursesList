@@ -23,6 +23,7 @@ import {
   daysUntil,
   relativeDayLabel,
 } from '../lib/datetime.js';
+import { useTehranDay } from '../lib/hooks.js';
 import { CapacityBar } from './Bits.jsx';
 
 /** One labelled fact in the 2-column grid. */
@@ -56,7 +57,10 @@ const MobileCard = React.memo(function MobileCard({
   const tone = fillTone(capacity.pct);
   const exam = parseExam(row['زمان امتحان']);
   const schedule = parseSchedule(row['زمانبندي تشكيل كلاس']);
-  const examDays = exam ? daysUntil(exam.date) : null;
+  // Day badge on the Tehran calendar via the trusted clock - refreshed once per
+  // Tehran-day change by the shared ticker, never per-second (one card of many).
+  const dayKey = useTehranDay();
+  const examDays = exam ? daysUntil(exam.date, dayKey * 86400000) : null;
   const examWhen = exam ? formatJalaliWithWeekday(exam.jy, exam.jm, exam.jd) : null;
   const courseName = isBlank(row['نام درس']) ? 'درس بدون نام' : row['نام درس'];
   const professor = isBlank(row['استاد']) ? null : row['استاد'];

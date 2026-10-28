@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { timeSource } from './timeSource.js';
+import { tehranDayKey, daysUntil, examStatus, splitDuration } from './datetime.js';
 
 /**
  * Media-query hook built on matchMedia instead of resize listeners: fires only when the
@@ -84,4 +86,97 @@ export function useOnMount(fn) {
     fn();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+}
+
+// ── Shared wall-clock tickers ─────────────────────────────────────────────────
+// ONE interval per cadence, shared by every subscriber (a per-card timer in the
+// virtualized table would mean hundreds of timers and a re-render storm). The
+// snapshot is updated inside the emit, before subscribers are notified, so
+// useSyncExternalStore always reads a value that only changes on notification.
+
+const tickers = new Map(); // intervalMs → { subs, timer, snap: { value }, compute }
+
+const ensureTicker = (intervalMs, compute) => {
+  let t = tickers.get(intervalMs);
+  if (!t) {
+    t = { subs: new Set(), timer: null, snap: { value: compute() }, compute };
+    tickers.set(intervalMs, t);
+  }
+  return t;
+};
+
+const emitTicker = (t) => {
+  t.snap.value = t.compute();
+  for (const fn of t.subs) fn();
+};
+
+const subscribeTicker = (intervalMs, compute, onChange) => {
+  const t = ensureTicker(intervalMs, compute);
+  t.subs.add(onChange);
+  if (t.timer === null) {
+    t.timer = setInterval(() => emitTicker(t), intervalMs);
+  }
+  return () => {
+    t.subs.delete(onChange);
+    if (t.subs.size === 0) {
+      clearInterval(t.timer);
+      tickers.delete(intervalMs);
+    }
+  };
+};
+
+const NOW_COMPUTE = () => timeSource.now();
+const TEHRAN_DAY_COMPUTE = () => tehranDayKey(timeSource.now());
+
+if (typeof document !== 'undefined') {
+  // Background tabs get their timers clamped (Chrome: down to 1/min), so on
+  // return to the tab, emit immediately instead of showing a stale tick.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    for (const t of tickers.values()) emitTicker(t);
+  });
+}
+
+/**
+ * Corrected "now" epoch, re-read on a shared cadence. Per-second cadence is for
+ * the single mounted detail modal only — never for list rows.
+ */
+export function useNow(intervalMs = 1000) {
+  const subscribe = useCallback(
+    (onChange) => subscribeTicker(intervalMs, NOW_COMPUTE, onChange),
+    [intervalMs]
+  );
+  const getSnapshot = useCallback(() => ensureTicker(intervalMs, NOW_COMPUTE).snap.value, [intervalMs]);
+  return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+/**
+ * The current Tehran calendar day as an integer. Subscribers re-render exactly
+ * once per Tehran-midnight crossing (checked per minute), regardless of the
+ * device's own timezone - this is what keeps the روزشمار badges honest for
+ * users abroad.
+ */
+export function useTehranDay() {
+  const subscribe = useCallback((onChange) => subscribeTicker(60000, TEHRAN_DAY_COMPUTE, onChange), []);
+  const getSnapshot = useCallback(() => ensureTicker(60000, TEHRAN_DAY_COMPUTE).snap.value, []);
+  return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+/**
+ * Live exam lifecycle against the corrected clock: 'upcoming' (ticking to the
+ * از time), 'ongoing' (ticking to the تا time) or 'finished'. Returns null for
+ * courses with no parsable exam cell.
+ */
+export function useExamCountdown(exam) {
+  const nowMs = useNow(1000);
+  if (!exam) return null;
+  const status = examStatus(exam.startAt, exam.endAt, nowMs);
+  const target = status === 'upcoming' ? exam.startAt : status === 'ongoing' ? exam.endAt : null;
+  return {
+    status,
+    nowMs,
+    remainingMs: target !== null ? Math.max(0, target - nowMs) : null,
+    parts: target !== null ? splitDuration(target - nowMs) : null,
+    daysLeft: daysUntil(exam.date, nowMs),
+  };
 }

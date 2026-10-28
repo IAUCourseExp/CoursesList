@@ -8,6 +8,7 @@ export const DENSITY_KEY = 'usc.density.v1';
 export const COLUMNS_KEY = 'usc.columns.v1';
 export const HINT_KEY = 'usc.hint.v1';
 export const TOUR_KEY = 'usc.tour.v3';
+export const TIME_KEY = 'usc.time.v1';
 
 export function hasSeenTour() {
   try {

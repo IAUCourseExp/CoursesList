@@ -159,6 +159,17 @@ self.onmessage = async (e) => {
     if (type === 'INIT') {
       const { url, cachedText } = payload || {};
 
+      const fetchCsv = async () => {
+        const t0 = Date.now();
+        const res = await fetch(url, { cache: 'no-cache' });
+        const dateHeader = res.headers.get('date');
+        const text = await res.text();
+        const t1 = Date.now();
+        // The response Date header doubles as a free network-clock sample for
+        // the countdown's time-source consensus (see lib/timeSource.js).
+        return { text, timeSample: dateHeader ? { dateHeader, t0, t1 } : null };
+      };
+
       if (cachedText) {
         replaceData(await parseCsv(cachedText));
         self.postMessage({
@@ -166,10 +177,9 @@ self.onmessage = async (e) => {
           payload: { source: 'cache', changed: false, data: masterData, columns },
         });
 
-        const res = await fetch(url, { cache: 'no-cache' });
-        const text = await res.text();
+        const { text, timeSample } = await fetchCsv();
         if (text === cachedText) {
-          self.postMessage({ type: 'STATUS', payload: { fresh: true } });
+          self.postMessage({ type: 'STATUS', payload: { fresh: true, timeSample } });
         } else {
           replaceData(await parseCsv(text));
           self.postMessage({
@@ -180,12 +190,12 @@ self.onmessage = async (e) => {
               data: masterData,
               columns,
               csvText: text,
+              timeSample,
             },
           });
         }
       } else {
-        const res = await fetch(url, { cache: 'no-cache' });
-        const text = await res.text();
+        const { text, timeSample } = await fetchCsv();
         replaceData(await parseCsv(text));
         self.postMessage({
           type: 'DATA_LOADED',
@@ -195,6 +205,7 @@ self.onmessage = async (e) => {
             data: masterData,
             columns,
             csvText: text,
+            timeSample,
           },
         });
       }

@@ -11,6 +11,7 @@ import {
   relativeDayLabel,
   toFaDigits,
 } from '../lib/datetime.js';
+import { useTehranDay } from '../lib/hooks.js';
 import { faNum, rowKeyOf } from '../lib/format.js';
 import {
   AlertIcon,
@@ -33,18 +34,23 @@ export default function ExamTimeline({
 }) {
   const [viewMode, setViewMode] = useState('matrix'); // 'matrix' | 'timeline' | 'cards'
   const [selectedExamItem, setSelectedExamItem] = useState(null);
+  // Tehran calendar day as a snapshot - the day badges refresh exactly once per
+  // Tehran-midnight crossing, computed from the trusted clock, not the device's
+  // local date (which can be a different day for users abroad).
+  const dayKey = useTehranDay();
 
   const hasExamConflicts = conflictData?.examConflicts?.length > 0;
 
   const { timeline, unscheduled, totalExams, sameDayCount } = useMemo(() => {
     const list = [];
     const unsched = [];
+    const dayNowMs = dayKey * 86400000;
 
     courses.forEach((c) => {
       const p = parseExam(c['زمان امتحان']);
       const key = rowKeyOf(c);
       if (p && p.date) {
-        const diff = daysUntil(p.date);
+        const diff = daysUntil(p.date, dayNowMs);
         const { label, weekday, gregorianShort } = formatJalaliWithWeekday(p.jy, p.jm, p.jd);
         list.push({
           course: c,
@@ -88,7 +94,7 @@ export default function ExamTimeline({
       totalExams: list.length,
       sameDayCount: multiExamDays,
     };
-  }, [courses]);
+  }, [courses, dayKey]);
 
   const handleCardClick = (item) => {
     if (onOpenDetail) {
