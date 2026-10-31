@@ -3,7 +3,12 @@
 
 import { chromium } from 'playwright';
 
-const BASE_URL = 'http://localhost:5173/CoursesList/';
+// Production-oriented suite (BUG-30): run against the PRODUCTION BUILD served
+// by `vite preview` (base /CoursesList/), not the dev server:
+//   npm run build && npx vite preview --port 4173
+//   npm run verify:mobile
+// Override with E2E_BASE=http://localhost:5173/CoursesList/ for dev testing.
+const BASE_URL = process.env.E2E_BASE || 'http://localhost:4173/CoursesList/';
 
 function assert(condition, message, details = '') {
   if (!condition) {

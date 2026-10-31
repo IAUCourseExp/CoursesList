@@ -2,8 +2,10 @@
 // Displays unit totals, regulatory limits, conflict warnings, batch offering-code copy,
 // calendar export, and shareable link generator.
 
-import React, { useState } from 'react';
-import { faNum, rowKeyOf } from '../lib/format.js';
+import React, { useRef, useState } from 'react';
+import { faNum, rowKeyOf, totalUnits as rowTotalUnits, capacityInfo } from '../lib/format.js';
+import { copyText } from '../lib/clipboard.js';
+import { useScrollLock, useDialogFocus } from '../lib/hooks.js';
 import {
   CloseIcon, CopyIcon, DownloadIcon, TrashIcon, AlertIcon, CheckIcon, ShareIcon, UserIcon, ClockIcon,
 } from './icons.jsx';
@@ -19,11 +21,32 @@ export default function CartDrawer({
   onExportIcs,
   onNotify,
   onOpenCompare,
+  pendingLegacyCount = 0,
+  onOpenLegacy,
 }) {
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  // ENH-3: the destructive clear-all asks for a second tap within 4 seconds
+  // instead of wiping a whole semester's selections from one slip.
+  const [confirmClear, setConfirmClear] = useState(false);
+  const confirmTimerRef = useRef(null);
+  const containerRef = useRef(null);
+  useScrollLock(true);
+  useDialogFocus(containerRef);
 
   if (!isOpen) return null;
+
+  const handleClearAllClick = () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = setTimeout(() => setConfirmClear(false), 4000);
+      return;
+    }
+    clearTimeout(confirmTimerRef.current);
+    setConfirmClear(false);
+    onClearAll();
+  };
 
   const totalUnits = unitSummary?.totalUnits || 0;
   const theoryUnits = unitSummary?.theoryUnits || 0;
@@ -33,39 +56,57 @@ export default function CartDrawer({
   const unitProgress = Math.min(100, Math.round((totalUnits / 20) * 100));
 
   // Copy all course offering codes at once for easy pasting into university portal
-  const handleCopyAllCodes = () => {
+  const handleCopyAllCodes = async () => {
     const codes = courses
       .map((c) => c['كد ارائه كلاس درس'] || c['كد درس'])
       .filter(Boolean);
 
     if (codes.length === 0) return;
 
-    const textToCopy = codes.join('\n');
-    navigator.clipboard.writeText(textToCopy).then(() => {
+    const ok = await copyText(codes.join('\n'));
+    if (ok) {
       setCopiedCode(true);
       onNotify?.('کدهای ارائه تمام دروس با موفقیت در کلیپ‌بورد کپی شد.');
       setTimeout(() => setCopiedCode(false), 2500);
-    });
+    } else {
+      onNotify?.('مرورگر اجازهٔ کپی نداد؛ کدها کپی نشدند.');
+    }
   };
 
   // Generate shareable link
-  const handleShareLink = () => {
-    const keys = courses.map((c) => encodeURIComponent(rowKeyOf(c)));
+  const handleShareLink = async () => {
+    // Producer contract (see App.handleShare): raw '||'-joined keys through
+    // searchParams - no per-key encoding, no per-key decoding on read.
+    const keys = courses.map((c) => rowKeyOf(c)).filter(Boolean);
+    if (keys.length === 0) return;
     const url = new URL(window.location.href);
+    url.search = '';
     url.searchParams.set('b', keys.join('||'));
-    navigator.clipboard.writeText(url.toString()).then(() => {
+    const ok = await copyText(url.toString());
+    if (ok) {
       setCopiedLink(true);
       onNotify?.('لینک اشتراک‌گذاری برنامه در کلیپ‌بورد کپی شد.');
       setTimeout(() => setCopiedLink(false), 2500);
-    });
+    } else {
+      onNotify?.('مرورگر اجازهٔ کپی نداد؛ لینک کپی نشد.');
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/60 backdrop-blur-xs animate-fade-in" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button
+        type="button"
+        aria-label="بستن سبد انتخاب واحد"
+        onClick={onClose}
+        className="absolute inset-0 cursor-default bg-slate-900/60 backdrop-blur-xs animate-fade-in"
+      />
       <div
-        className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl transition-transform animate-slide-in-right"
+        ref={containerRef}
+        tabIndex={-1}
+        className="relative flex h-full w-full max-w-xl flex-col bg-white shadow-2xl transition-transform animate-slide-in-right outline-none"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
+        aria-modal="true"
         aria-label="سبد انتخاب واحد"
       >
         {/* Header */}
@@ -218,12 +259,16 @@ export default function CartDrawer({
 
             <button
               type="button"
-              onClick={onClearAll}
+              onClick={handleClearAllClick}
               disabled={courses.length === 0}
-              className="flex items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-50"
+              className={`flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-bold transition-colors disabled:opacity-50 ${
+                confirmClear
+                  ? 'border-rose-500 bg-rose-600 text-white shadow-sm'
+                  : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+              }`}
             >
               <TrashIcon className="size-4" />
-              خالی کردن سبد
+              {confirmClear ? 'مطمئنید؟ کلیک دوم پاک می‌کند' : 'خالی کردن سبد'}
             </button>
           </div>
 
@@ -232,6 +277,17 @@ export default function CartDrawer({
             <h3 className="mb-3 text-xs font-black text-slate-700">
               لیست دروس انتخابی ({faNum(courses.length)}):
             </h3>
+
+            {pendingLegacyCount > 0 && (
+              <button
+                type="button"
+                onClick={onOpenLegacy}
+                className="mb-3 flex w-full items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] font-bold text-amber-800 transition-colors hover:bg-amber-100"
+              >
+                <span>{faNum(pendingLegacyCount)} نشان قدیمی نیازمند تعیین تکلیف</span>
+                <span className="font-black text-amber-900">مشاهده ←</span>
+              </button>
+            )}
 
             {courses.length === 0 ? (
               <p className="py-8 text-center text-xs text-slate-400">
@@ -246,7 +302,11 @@ export default function CartDrawer({
                   const sched = course['زمانبندي تشكيل كلاس'] || 'نامشخص';
                   const exam = course['زمان امتحان'] || 'نامشخص';
                   const code = course['كد ارائه كلاس درس'] || course['كد درس'] || '';
-                  const units = course['تعداد واحد نظري'] || '0';
+                  // Theory + practical, matching the drawer's own total (BUG-19).
+                  const units = rowTotalUnits(course) ?? 0;
+                  // ENH-4: registration-reality signal from data that actually
+                  // carries capacity AND enrollment; nothing shown otherwise.
+                  const cap = capacityInfo(course);
                   const isConflicted = conflictData?.conflictRowKeys?.has(key);
 
                   return (
@@ -262,8 +322,18 @@ export default function CartDrawer({
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10.5px] font-bold text-blue-800">
-                              {units} واحد
+                              {faNum(units)} واحد
                             </span>
+                            {cap.pct !== null && cap.pct >= 100 && (
+                              <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-black text-rose-700">
+                                ظرفیت تکمیل
+                              </span>
+                            )}
+                            {cap.pct !== null && cap.pct >= 85 && cap.pct < 100 && (
+                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-black text-amber-700">
+                                ظرفیت رو به تکمیل
+                              </span>
+                            )}
                             {isConflicted && (
                               <span className="rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-black text-white">
                                 ⚠ تداخل

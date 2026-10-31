@@ -3,10 +3,11 @@
 // Weekly Schedule Matrix, Exam Timeline & Conflicts, and Calendar Export.
 // Caches completion state in localStorage and supports manual re-launch.
 
-import React, { useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback } from 'react';
 import { CloseIcon, ChevronRight, ChevronLeft, CompassIcon } from './icons.jsx';
 import { faNum } from '../lib/format.js';
 import { markTourSeen } from '../lib/storage.js';
+import { useScrollLock, useDialogFocus } from '../lib/hooks.js';
 
 const TOUR_STEPS = [
   {
@@ -55,6 +56,7 @@ const TOUR_STEPS = [
       'پشتیبانی کامل از دروسی که دو جلسه در هفته برگزار می‌شوند.',
       'چیدمان موازی در صورت وقوع تداخل زمانی بدون پنهان ماندن هیچ کلاسی.',
       'امکان چاپ یا ذخیره افقی در قالب PDF با گرافیک کامل جهت استفاده آفلاین.',
+      '💡 در موبایل: روی آیکون 📅 (تقویم) در نوار بالا بزنید تا به این تب بروید.',
     ],
   },
   {
@@ -110,6 +112,12 @@ export default function TourGuide({ isOpen, onClose, onFinish }) {
     if (onClose) onClose();
   }, [onClose]);
 
+  // Scroll locking and dialog focus follow the tour's open state (BUG-31);
+  // the effects no-op while the tour is closed because the ref stays empty.
+  const containerRef = useRef(null);
+  useScrollLock(isOpen);
+  useDialogFocus(containerRef);
+
   if (!isOpen) return null;
 
   const currentStep = TOUR_STEPS[stepIndex];
@@ -123,16 +131,21 @@ export default function TourGuide({ isOpen, onClose, onFinish }) {
       aria-modal="true"
       aria-labelledby="tour-step-title"
     >
-      {/* Backdrop */}
+      {/* Backdrop: closing from here is TEMPORARY (BUG-31) - only the explicit
+          skip button or finishing the last step should silence future auto-tours. */}
       <button
         type="button"
-        aria-label="بستن تور راهنما"
-        onClick={handleSkip}
+        aria-label="بستن موقت تور راهنما"
+        onClick={onClose}
         className="absolute inset-0 bg-slate-900/60 backdrop-blur-md transition-opacity"
       />
 
       {/* Modal Card */}
-      <div className="relative flex w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-slate-200/90 bg-white shadow-2xl animate-sheet-up">
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        className="relative flex w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-slate-200/90 bg-white shadow-2xl animate-sheet-up outline-none"
+      >
         {/* Header with Progress Bar */}
         <div className="border-b border-slate-100 bg-slate-50/70 p-4">
           <div className="flex items-center justify-between gap-2">

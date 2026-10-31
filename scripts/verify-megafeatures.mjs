@@ -131,13 +131,103 @@ assert('Over 24 units is flagged as overload', uOver.totalUnits === 26 && uOver.
 // ── 4. iCalendar (.ics) Generator ────────────────────────────────────────────
 console.log('\n[4] RFC 5545 iCALENDAR GENERATOR:');
 
-const icsText = generateIcsCalendar([c1, cExamConflict]);
+import { jalaliToDate } from '../src/lib/datetime.js';
+import { parseJalaliDate, validateSemesterEntry } from '../src/lib/semester.js';
+
+// Semester fixture mirrors the real public/semester.json presets (ISSUE 1):
+// APPROXIMATE ranges the owner keeps editable - never presented as official.
+const PRESETS = {
+  active: 'fall',
+  semesters: {
+    fall: { label: 'نیم‌سال اول (مهر)', semesterStart: '1405/07/01', teachingEnd: '1405/09/30' },
+    winter: { label: 'نیم‌سال دوم (بهمن)', semesterStart: '1405/11/15', teachingEnd: '1406/03/20' },
+    summer: { label: 'نیم‌سال تابستان', semesterStart: '1405/04/20', teachingEnd: '1405/05/30' },
+  },
+};
+
+// 4a. Preset validation (ISSUE 1): all three parse; boundaries/leap handled.
+const fall = validateSemesterEntry(PRESETS.semesters.fall);
+const winter = validateSemesterEntry(PRESETS.semesters.winter);
+const summer = validateSemesterEntry(PRESETS.semesters.summer);
+assert('fall preset parses (1 Mehr → 30 Azar)', !!fall && fall.startText === '1405/07/01' && fall.endText === '1405/09/30');
+assert('winter preset parses and crosses the Jalali year', !!winter && winter.teachingEnd.getUTCFullYear() === 2027,
+  `teachingEnd → ${winter ? winter.teachingEnd.toISOString().slice(0, 10) : 'null'}`);
+assert('summer preset parses', !!summer);
+
+const leapEnd = validateSemesterEntry({ semesterStart: '1403/10/01', teachingEnd: '1403/12/30' });
+assert('leap-year Esfand 30 is a valid teaching end (1403 is leap)', !!leapEnd);
+const nonLeapEnd = validateSemesterEntry({ semesterStart: '1404/10/01', teachingEnd: '1404/12/30' });
+assert('Esfand 30 of a non-leap year is rejected, not rolled over', nonLeapEnd === null);
+const inverted = validateSemesterEntry({ semesterStart: '1405/09/30', teachingEnd: '1405/07/01' });
+assert('inverted window is rejected', inverted === null);
+const malformed = validateSemesterEntry({ semesterStart: '1405/13/01', teachingEnd: '1405/11/30' });
+assert('malformed month is rejected', malformed === null);
+
+// The window handed to the generator comes from the CONFIRMED entry.
+const SEMESTER = fall;
+const NOW_MS = Date.UTC(2026, 0, 1, 12, 30, 0); // fixed trusted-clock instant
+
+// 4b. Without a confirmed window the export degrades honestly:
+const icsNoSemester = generateIcsCalendar([c1, cExamConflict], { nowMs: NOW_MS });
+assert('no-semester ICS starts with BEGIN:VCALENDAR', icsNoSemester.startsWith('BEGIN:VCALENDAR'));
+assert('no-semester ICS omits weekly class events instead of guessing the window', !icsNoSemester.includes('RRULE:FREQ=WEEKLY'));
+assert('no-semester ICS still contains the exact exam event', icsNoSemester.includes('SUMMARY:امتحان نهایی:'));
+
+// 4b'. With the confirmed window: full weekly recurrence
+const icsText = generateIcsCalendar([c1, cExamConflict], { semester: SEMESTER, nowMs: NOW_MS });
 assert('ICS starts with BEGIN:VCALENDAR', icsText.startsWith('BEGIN:VCALENDAR'));
 assert('ICS ends with END:VCALENDAR', icsText.trim().endsWith('END:VCALENDAR'));
 assert('ICS contains weekly class recurrence rule', icsText.includes('RRULE:FREQ=WEEKLY'));
 assert('ICS contains Persian summary title', icsText.includes('SUMMARY:برنامه‌نویسی پیشرفته'));
 assert('ICS contains exam event', icsText.includes('SUMMARY:امتحان نهایی:'));
 assert('ICS contains reminder alarms', icsText.includes('BEGIN:VALARM'));
+assert('DTSTAMP comes from the trusted clock, not the device', icsText.includes('DTSTAMP:20260101T123000Z'));
+
+// DTSTART: first دوشنبه (Monday) on/after 1 Mehr 1405, 08:00 Tehran = 04:30 UTC
+const semStart = SEMESTER.semesterStart;
+const daysToMonday = ((2 + 6) % 7 - (semStart.getUTCDay()) + 7) % 7;
+const firstMonday = new Date(semStart);
+firstMonday.setUTCDate(firstMonday.getUTCDate() + daysToMonday);
+firstMonday.setUTCHours(8 - 3, 0 - 30); // 08:00 Tehran → UTC
+const wantDTSTART = `${firstMonday.getUTCFullYear()}${String(firstMonday.getUTCMonth() + 1).padStart(2, '0')}${String(firstMonday.getUTCDate()).padStart(2, '0')}T${String(firstMonday.getUTCHours()).padStart(2, '0')}3000Z`;
+assert('weekly DTSTART is the first matching weekday on/after semester start', icsText.includes(`DTSTART:${wantDTSTART}`), wantDTSTART);
+// UNTIL = 30 Azar 1405 → 2026-12-21T235959Z (recurrence stops at the teaching end)
+assert('weekly UNTIL equals the teaching end (T235959Z)', icsText.includes('UNTIL=20261221T235959Z'),
+  `30 Azar 1405 → ${SEMESTER.teachingEnd.toISOString().slice(0, 10)}`);
+assert('teaching end is before the main exam window in the data (classes stop before exams)',
+  SEMESTER.teachingEnd.getTime() < jalaliToDate(1405, 10, 5).getTime());
+
+// 4c. RFC 5545 TEXT escaping (ASCII comma, semicolon - the characters that
+// actually break ICS property parsing; Persian ، and ؛ are plain TEXT chars)
+const messyCourse = {
+  ...c1,
+  'نام درس': 'درس, با کاما; و سمیکالن تست',
+  'استاد': 'استاد; دوم, سوم',
+  'مكان برگزاري': 'سالن 1, طبقه 2; شرق',
+};
+const icsMessy = generateIcsCalendar([messyCourse], { semester: SEMESTER, nowMs: NOW_MS });
+assert('commas and semicolons are escaped in SUMMARY', icsMessy.includes('درس\\, با کاما\\; و سمیکالن تست'));
+assert('commas and semicolons are escaped in LOCATION', icsMessy.includes('سالن 1\\, طبقه 2\\; شرق'));
+
+// 4d. Line folding at 75 octets, UTF-8-safe, unfoldable
+const longCourse = {
+  ...c1,
+  'نام درس': 'این نام درس عمداً بسیار طولانی است تا خط خروجی تقویم از حد هفتاد و پنج اکتت عبور کند و folding آزمایش شود ' + 'برنامه‌سازی',
+};
+const icsLong = generateIcsCalendar([longCourse], { semester: SEMESTER, nowMs: NOW_MS });
+const enc = new TextEncoder();
+const physLines = icsLong.split('\r\n');
+assert('every physical line stays within 75 octets', physLines.every((l) => enc.encode(l).length <= 75));
+const contCount = physLines.filter((l) => l.startsWith(' ')).length;
+assert('folding actually produced continuation lines', contCount > 0, `${contCount} continuations`);
+// Unfold (RFC 5545 §3.1: remove CRLF + one leading space) and confirm the
+// original logical line comes back intact.
+const unfolded = [];
+for (const l of physLines) {
+  if (l.startsWith(' ')) unfolded[unfolded.length - 1] += l.slice(1);
+  else unfolded.push(l);
+}
+assert('unfolded lines restore the original long title', unfolded.some((l) => l.startsWith('SUMMARY:') && l.includes('این نام درس عمداً بسیار طولانی')) && unfolded.every((l) => !l.startsWith(' ')));
 
 console.log('\n──────────────────────────────');
 console.log(`RESULT: ${passed} passed, ${failed} failed\n`);

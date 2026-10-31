@@ -9,10 +9,12 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "verify": "node scripts/verify-worker.mjs && node scripts/verify-datetime.mjs && node scripts/verify-timesource.mjs && node scripts/verify-megafeatures.mjs",
+    "verify": "node scripts/verify-worker.mjs && node scripts/verify-datetime.mjs && node scripts/verify-timesource.mjs && node scripts/verify-megafeatures.mjs && node scripts/verify-share.mjs && node scripts/verify-identity.mjs && node scripts/verify-normalize.mjs",
     "preview": "vite preview",
     "deploy-all": "git add . && git commit -m 'update' && git push origin main && npm run generate-time && npm run build && npx gh-pages -d dist",
-    "generate-time": "node scripts/generate-build-time.js"
+    "generate-time": "node scripts/generate-build-time.js",
+    "verify:e2e": "node scripts/verify-e2e.mjs",
+    "verify:mobile": "node scripts/verify-mobile-responsiveness.mjs"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.18",
@@ -29,6 +31,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.24",
+    "axe-core": "^4.14.0",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",

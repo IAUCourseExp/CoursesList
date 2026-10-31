@@ -2,7 +2,7 @@
 // Provides IAU Shiraz academic regulations (units, GPA rules, probation, conflicts),
 // feature walkthroughs, keyboard shortcuts, Telegram channels, and tour relaunch.
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   CloseIcon,
   SearchIcon,
@@ -19,7 +19,7 @@ import {
   BookOpenIcon,
   GraduationCapIcon,
 } from './icons.jsx';
-import { useScrollLock } from '../lib/hooks.js';
+import { useScrollLock, useDialogFocus } from '../lib/hooks.js';
 
 const Kbd = ({ children }) => (
   <kbd className="mx-0.5 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-0.5 font-sans text-[11px] font-bold text-slate-700 shadow-2xs">
@@ -29,6 +29,8 @@ const Kbd = ({ children }) => (
 
 export default function HelpPanel({ onClose, onStartTour }) {
   useScrollLock(true);
+  const containerRef = useRef(null);
+  useDialogFocus(containerRef);
   const [activeTab, setActiveTab] = useState('regulations'); // 'regulations' | 'features' | 'shortcuts' | 'channels'
 
   return (
@@ -45,7 +47,11 @@ export default function HelpPanel({ onClose, onStartTour }) {
         className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity"
       />
 
-      <div className="relative flex max-h-[90dvh] w-full max-w-3xl flex-col overflow-hidden rounded-t-3xl bg-slate-50 shadow-2xl animate-sheet-up sm:max-h-[88vh] sm:rounded-3xl">
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        className="relative flex sheet-max w-full max-w-3xl flex-col overflow-hidden rounded-t-3xl bg-slate-50 shadow-2xl animate-sheet-up outline-none sm:max-h-[88vh] sm:rounded-3xl"
+      >
         {/* Header */}
         <header className="flex items-center gap-3 border-b border-slate-200 bg-white px-5 py-3.5">
           <span className="grid size-10 place-items-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/20">
@@ -85,8 +91,9 @@ export default function HelpPanel({ onClose, onStartTour }) {
           </button>
         </header>
 
-        {/* Navigation Tabs */}
-        <div className="flex border-b border-slate-200 bg-white px-3 gap-1 overflow-x-auto overflow-y-hidden thin-scrollbar flex-shrink-0" role="tablist" aria-label="بخش‌های راهنما" style={{ height: 44, minHeight: 44, maxHeight: 44, lineHeight: 0, alignItems: 'center', overflow: 'hidden' }}>
+        {/* Navigation Tabs - fixed 44px rail; horizontal scrolling stays enabled so
+            four labelled tabs can never be clipped without a scrollbar (BUG-21). */}
+        <div className="flex border-b border-slate-200 bg-white px-3 gap-1 overflow-x-auto overflow-y-hidden thin-scrollbar flex-shrink-0" role="tablist" aria-label="بخش‌های راهنما" style={{ height: 44, minHeight: 44, maxHeight: 44, lineHeight: 0, alignItems: 'center' }}>
           <button
             type="button"
             role="tab"
@@ -102,8 +109,9 @@ export default function HelpPanel({ onClose, onStartTour }) {
             style={{ height: 36, lineHeight: '36px', padding: '0 12px', appearance: 'none', border: 'none', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ display: 'block' }}>
-              <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8z"/>
-              <path fill="currentColor" d="M11 16.5c-0.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm6 0c-0.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm-3-4.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5-1.12-2.5-2.5-2.5-2.5 1.12-2.5 2.5z"/>
+              {/* Document/regulations icon - distinct from every other tab (BUG-21) */}
+              <path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/>
+              <path fill="currentColor" d="M8 12h8v2H8v-2zm0 4h8v2H8v-2z"/>
             </svg>
             <span className="hidden sm:inline">قوانین و مقررات آموزشی</span>
           </button>
@@ -160,8 +168,8 @@ export default function HelpPanel({ onClose, onStartTour }) {
             style={{ height: 36, lineHeight: '36px', padding: '0 12px', appearance: 'none', border: 'none', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ display: 'block' }}>
-              <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8z"/>
-              <path fill="currentColor" d="M11 16.5c-0.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm6 0c-0.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm-3-4.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5-1.12-2.5-2.5-2.5-2.5 1.12-2.5 2.5z"/>
+              {/* Send/paper-plane icon - distinct from the regulations tab (BUG-21) */}
+              <path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
             </svg>
             <span className="hidden sm:inline">کانال‌های تلگرام و منابع</span>
           </button>
@@ -270,7 +278,7 @@ export default function HelpPanel({ onClose, onStartTour }) {
                 <div className="min-w-0">
                   <h4 className="text-[13px] font-black text-slate-900">برنامه هفتگی ماتریسی دیداری</h4>
                   <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                    جدول گرافیکی شنبه تا جمعه با ساعات استاندارد دانشگاه (۰۸:۰۰ تا ۱۸:۰۰). کلاس‌ها در خانه روز و ساعت متناظر قرار گرفته و در صورت تداخل، کادر کلاس قرمز رنگ و چشمک‌زن می‌شود.
+                    جدول گرافیکی شنبه تا جمعه با بازهٔ ساعات ۰۷:۳۰ تا ۲۰:۳۰. کلاس‌ها در خانه روز و ساعت متناظر قرار گرفته و در صورت تداخل، کادر کلاس قرمز رنگ و چشمک‌زن می‌شود.
                   </p>
                 </div>
               </div>
@@ -317,9 +325,15 @@ export default function HelpPanel({ onClose, onStartTour }) {
                       </div>
                     </tr>
                     <tr className="flex items-center justify-between p-3 hover:bg-slate-50">
-                      <span className="text-slate-700 font-medium">نمایش دروس انتخاب‌شده (سبد)</span>
-                      <div className="flex items-center gap-1">
-                        <Kbd>B</Kbd> <span className="text-slate-400">یا</span> <Kbd>Ctrl</Kbd>+<Kbd>B</Kbd>
+                      <span className="text-slate-700 font-medium">نمایش سبد انتخاب واحد</span>
+                      <div>
+                        <Kbd>B</Kbd>
+                      </div>
+                    </tr>
+                    <tr className="flex items-center justify-between p-3 hover:bg-slate-50">
+                      <span className="text-slate-700 font-medium">نمایش فقط دروس نشان‌شده</span>
+                      <div>
+                        <Kbd>Ctrl</Kbd>+<Kbd>B</Kbd>
                       </div>
                     </tr>
                     <tr className="flex items-center justify-between p-3 hover:bg-slate-50">
@@ -389,7 +403,7 @@ export default function HelpPanel({ onClose, onStartTour }) {
                       <p className="text-xs text-slate-500">نظرات و تجربیات دانشجویان درباره تدریس و نمره‌دهی اساتید</p>
                     </div>
                   </div>
-                  <span className="font-mono text-xs font-bold text-blue-700 dir-ltr" dir="ltr">
+                  <span className="font-mono text-xs font-bold text-blue-700" dir="ltr">
                     @IAUCourseExp
                   </span>
                 </a>
@@ -412,7 +426,7 @@ export default function HelpPanel({ onClose, onStartTour }) {
                       <p className="text-xs text-slate-500">بانک جزوات، حل‌المسائل و نمونه‌سوالات امتحانی دانشگاه آزاد شیراز</p>
                     </div>
                   </div>
-                  <span className="font-mono text-xs font-bold text-indigo-700 dir-ltr" dir="ltr">
+                  <span className="font-mono text-xs font-bold text-indigo-700" dir="ltr">
                     @jozveiau
                   </span>
                 </a>

@@ -4,18 +4,10 @@
 //   <ExamCountdownDetails/> - the ticking "X روز و Y ساعت تا شروع امتحان" line + time-source note
 // Both subscribe to the same shared per-second ticker, so no extra timers exist.
 
-/* eslint-disable react-refresh/only-export-components -- module-level constant in component file is fine */
-
 import { useExamCountdown, useTehranDay } from '../lib/hooks.js';
-import { useTimeState } from './TimeSourceProvider.jsx';
+import { useTimeState } from '../lib/TimeContext.jsx';
+import { timeBadgeMeta } from '../lib/timeSource.js';
 import { relativeDayLabel, faCountdownLabel, daysUntil } from '../lib/datetime.js';
-
-const CONFIDENCE_META = {
-  pin: { label: 'زمان دستی', dot: 'bg-violet-500', title: 'مدیر سایت زمان مرجع را دستی تنظیم کرده است' },
-  high: { label: 'زمان رسمی', dot: 'bg-emerald-500', title: 'بر اساس زمان رسمی؛ با چند منبع مستقل هم‌خوان است' },
-  medium: { label: 'زمان شبکه', dot: 'bg-amber-500', title: 'بر اساس زمان یک منبع شبکه‌ای' },
-  low: { label: 'ساعت دستگاه', dot: 'bg-slate-400', title: 'منبع شبکه‌ای در دسترس نبود؛ بر اساس ساعت همین دستگاه' },
-};
 
 export function ExamCountdownBadge({ exam }) {
   const cd = useExamCountdown(exam);
@@ -58,10 +50,12 @@ export function ExamCountdownBadge({ exam }) {
 
 export function ExamCountdownDetails({ exam }) {
   const cd = useExamCountdown(exam);
-  const { confidence, clockDrift } = useTimeState();
+  const { confidence, clockDrift, sourceType } = useTimeState();
   if (!exam || !cd || cd.status === 'unknown' || cd.status === 'finished') return null;
 
-  const meta = CONFIDENCE_META[confidence] || CONFIDENCE_META.low;
+  // Source type and confidence are mapped by the shared pure helper (ISSUE 4):
+  // network synchronization is never presented as an official time.
+  const meta = timeBadgeMeta(sourceType, confidence);
   const targetLabel = cd.status === 'ongoing' ? 'تا پایان امتحان' : 'تا شروع امتحان';
   const live = faCountdownLabel(cd.parts);
 

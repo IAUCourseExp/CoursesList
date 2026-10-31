@@ -13,6 +13,7 @@ import {
 } from '../lib/datetime.js';
 import { useTehranDay } from '../lib/hooks.js';
 import { faNum, rowKeyOf } from '../lib/format.js';
+import { timeSource } from '../lib/timeSource.js';
 import {
   AlertIcon,
   ClockIcon,
@@ -73,7 +74,8 @@ export default function ExamTimeline({
     // Sort chronologically
     list.sort((a, b) => {
       if (a.parsed.sortKey !== b.parsed.sortKey) return a.parsed.sortKey - b.parsed.sortKey;
-      return (a.parsed.from || '').localeCompare(b.parsed.from || '');
+      // Zero-pad so single-digit hours sort numerically (BUG-27).
+      return (a.parsed.from || '').padStart(5, '0').localeCompare((b.parsed.from || '').padStart(5, '0'));
     });
 
     // Group by date
@@ -203,7 +205,7 @@ export default function ExamTimeline({
       <div className="hidden print:block mb-4 text-center border-b pb-3">
         <h2 className="text-lg font-black text-slate-900">برنامه رسمی امتحانات پایان‌ترم دانشگاه آزاد واحد شیراز</h2>
         <p className="text-xs text-slate-600 mt-1 font-bold">
-          تعداد کل امتحانات: {faNum(totalExams)} درس | تاریخ چاپ: {new Date().toLocaleDateString('fa-IR')}
+          تعداد کل امتحانات: {faNum(totalExams)} درس | تاریخ چاپ: {new Date(timeSource.now()).toLocaleDateString('fa-IR')}
         </p>
       </div>
 

@@ -2,10 +2,12 @@
 // All table items, headers, rows and cells are center aligned for maximum clarity.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import DesktopRow from './DesktopRow.jsx';
 import MobileCard from './MobileCard.jsx';
 import FacetPanel from './FacetPanel.jsx';
+import { CellContent } from './cells.jsx';
 import { ArrowUpIcon, FilterIcon, SearchIcon } from './icons.jsx';
 import { EmptyState } from './Bits.jsx';
 import { buildHighlighter, faNum, rowKeyOf } from '../lib/format.js';
@@ -43,6 +45,7 @@ export default function VirtualTable({
   onWidthsCommit,
   density = 'comfortable',
   bookmarks = [],
+  conflictRowKeys = new Set(),
   onToggleBookmark,
   onCopyRow,
   onCompare,
@@ -50,10 +53,11 @@ export default function VirtualTable({
   onClearFilters,
   onClearSearch,
   hasSearch = false,
+  openFacetPanel = null, // Unified facet panel state from App
+  setOpenFacetPanel = () => {},
 }) {
   const isMobile = useIsMobile();
   const parentRef = useRef(null);
-  const [openFacet, setOpenFacet] = useState(null);
   const [draggingCol, setDraggingCol] = useState(null);
   const dragRef = useRef({ col: null, startX: 0, startW: 0 });
 
@@ -64,6 +68,9 @@ export default function VirtualTable({
 
   // Track the actual visible width of the table viewport to intelligently stretch columns
   const [containerWidth, setContainerWidth] = useState(0);
+  // True only while the browser is actually printing (BUG-32): print gets a
+  // full static table instead of the virtualized row window.
+  const [printing, setPrinting] = useState(false);
 
   useLayoutEffect(() => {
     const el = parentRef.current;
@@ -73,6 +80,17 @@ export default function VirtualTable({
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const onBefore = () => setPrinting(true);
+    const onAfter = () => setPrinting(false);
+    window.addEventListener('beforeprint', onBefore);
+    window.addEventListener('afterprint', onAfter);
+    return () => {
+      window.removeEventListener('beforeprint', onBefore);
+      window.removeEventListener('afterprint', onAfter);
+    };
   }, []);
 
   const baseWidthOf = useCallback(
@@ -146,37 +164,73 @@ export default function VirtualTable({
     overscan: isMobile ? 8 : 14,
   });
 
+  // Re-derive every measurement when the row-height model changes (BUG-07):
+  // estimateSize is not a dependency of virtual-core's measurement memo, so
+  // switching density (44/56/72px) or crossing the mobile breakpoint must
+  // force the recalculation explicitly. measure() clears the size cache, and
+  // the next pass rebuilds positions from the current estimateSize; mobile
+  // cards re-measure themselves through measureElement as before.
+  useLayoutEffect(() => {
+    rowVirtualizer.measure();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [density, isMobile]);
+
   const showBackToTop = useScrolledPast(parentRef, 400);
   const scrollToTop = () => {
     parentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  useLayoutEffect(() => {
-    if (isMobile) return;
-    const el = parentRef.current;
-    if (el && el.scrollLeft === 0 && el.scrollWidth > el.clientWidth) {
-      el.scrollLeft = el.scrollWidth - el.clientWidth;
-    }
-  }, [isMobile, columns]);
-
-  // Dismiss open header facet when clicking outside or pressing Escape
+  // When the result set transitions to empty (e.g. a filter removed the last
+  // row while the user was scrolled down), bring the viewport back so the
+  // empty state and its recovery actions are actually visible (BUG-16).
+  // Ordinary filtering/sorting never touches the scroll position.
+  const wasEmptyRef = useRef(true);
   useEffect(() => {
-    if (!openFacet) return undefined;
-    const onDown = (e) => {
-      if (!e.target.closest?.('[data-facet-panel],[data-facet-toggle]')) {
-        setOpenFacet(null);
-      }
-    };
-    const onKey = (e) => {
-      if (e.key === 'Escape') setOpenFacet(null);
-    };
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
+    const empty = data.length === 0;
+    if (empty && !wasEmptyRef.current) parentRef.current?.scrollTo({ top: 0 });
+    wasEmptyRef.current = empty;
+  }, [data.length]);
+
+  // Header facet dropdown (BUG-17): the panel renders through a portal into
+  // document.body, anchored to the header toggle button. Rendering it inside
+  // the scroll container used to clip it at the scrollport edges (leftmost
+  // columns, short viewports) and scroll it out of view. Outside-click and
+  // Escape dismissal stay owned by App's single document-level listener.
+  const toggleRefsRef = useRef(new Map());
+  const [facetRect, setFacetRect] = useState(null);
+
+  const updateFacetRect = useCallback(() => {
+    if (openFacetPanel?.variant !== 'dropdown') return;
+    const btn = toggleRefsRef.current.get(openFacetPanel.column);
+    if (btn) setFacetRect(btn.getBoundingClientRect());
+  }, [openFacetPanel]);
+
+  useEffect(() => {
+    if (openFacetPanel?.variant !== 'dropdown') {
+      setFacetRect(null);
+      return undefined;
+    }
+    updateFacetRect();
+    const onReposition = () => updateFacetRect();
+    document.addEventListener('scroll', onReposition, true);
+    window.addEventListener('resize', onReposition);
     return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('scroll', onReposition, true);
+      window.removeEventListener('resize', onReposition);
     };
-  }, [openFacet]);
+  }, [openFacetPanel, updateFacetRect]);
+
+  // Keep the portaled panel under the toggle and inside the viewport.
+  const FACET_PANEL_W = 304; // w-[19rem]
+  const facetPortalStyle = useMemo(() => {
+    if (!facetRect) return null;
+    const left = Math.min(
+      Math.max(8, facetRect.left + facetRect.width / 2 - FACET_PANEL_W / 2),
+      window.innerWidth - FACET_PANEL_W - 8,
+    );
+    const top = Math.min(facetRect.bottom + 6, window.innerHeight - 120);
+    return { top, left };
+  }, [facetRect]);
 
   // Column resizing handlers
   const startResize = (e, col) => {
@@ -184,6 +238,7 @@ export default function VirtualTable({
     e.stopPropagation();
     setDraggingCol(col);
     dragRef.current = { col, startX: e.clientX, startW: widthOf(col) };
+    document.body.classList.add('col-resizing'); // suppress text selection while dragging (BUG-26)
 
     const onPointerMove = (ev) => {
       const { col: c, startX, startW } = dragRef.current;
@@ -194,6 +249,7 @@ export default function VirtualTable({
     };
 
     const onPointerUp = () => {
+      document.body.classList.remove('col-resizing');
       setDraggingCol(null);
       dragRef.current = { col: null, startX: 0, startW: 0 };
       window.removeEventListener('pointermove', onPointerMove);
@@ -207,10 +263,10 @@ export default function VirtualTable({
 
   const toggleFacet = (e, col) => {
     e.stopPropagation();
-    if (openFacet === col) {
-      setOpenFacet(null);
+    if (openFacetPanel?.column === col) {
+      setOpenFacetPanel(null);
     } else {
-      setOpenFacet(col);
+      setOpenFacetPanel({ column: col, variant: 'dropdown' });
       onEnsureFacets(col);
     }
   };
@@ -225,8 +281,15 @@ export default function VirtualTable({
         aria-label="جدول دروس"
       >
         <div
+          // Conventional data table (WAI-ARIA table pattern), not a grid: cells
+          // are not focus targets and there is no arrow-key navigation model.
+          // Interactions live in independently focusable widgets inside cells.
+          // aria-rowcount/-colcount preserve real totals despite virtualization.
+          role={isMobile ? undefined : 'table'}
+          aria-rowcount={isMobile ? undefined : data.length + 1}
+          aria-colcount={isMobile ? undefined : columns.length + 1}
           style={{
-            height: `${rowVirtualizer.getTotalSize() + (isMobile ? 0 : HEADER_HEIGHT)}px`,
+            height: printing ? 'auto' : `${rowVirtualizer.getTotalSize() + (isMobile ? 0 : HEADER_HEIGHT)}px`,
             width: isMobile ? '100%' : `${effectiveTableWidth}px`,
             minWidth: '100%',
             position: 'relative',
@@ -299,11 +362,15 @@ export default function VirtualTable({
                     <button
                       type="button"
                       data-facet-toggle
+                      ref={(el) => {
+                        if (el) toggleRefsRef.current.set(col, el);
+                        else toggleRefsRef.current.delete(col);
+                      }}
                       onClick={(e) => toggleFacet(e, col)}
                       aria-label={`فیلتر ${fullLabelOf(col)}`}
-                      aria-expanded={openFacet === col}
+                      aria-expanded={openFacetPanel?.column === col}
                       title={`فیلتر ${fullLabelOf(col)}`}
-                      className={`relative grid size-7 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/70 ${
+                      className={`relative grid size-8 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/70 ${
                         selectedCount
                           ? 'bg-blue-500 text-white shadow-sm shadow-blue-500/40'
                           : 'bg-white/10 text-slate-300 hover:bg-white/25'
@@ -316,27 +383,6 @@ export default function VirtualTable({
                         </span>
                       )}
                     </button>
-
-                    {/* Popover facet dropdown anchored to the header cell */}
-                    {openFacet === col && (
-                      <div className="absolute top-full end-0 z-50">
-                        <FacetPanel
-                          column={col}
-                          values={facets[col] || []}
-                          loading={!facets[col] && facetsLoading === col}
-                          selected={filters[col] || []}
-                          onToggle={(v) => {
-                            const current = filters[col] || [];
-                            const next = current.includes(v) ? current.filter((x) => x !== v) : [...current, v];
-                            onFilterChange(col, next.length ? next : null);
-                          }}
-                          onClear={() => onFilterChange(col, null)}
-                          onClose={() => setOpenFacet(null)}
-                          variant="dropdown"
-                          autoFocus
-                        />
-                      </div>
-                    )}
 
                     {/* Column Resizer Handle */}
                     <div
@@ -358,12 +404,14 @@ export default function VirtualTable({
             </div>
           )}
 
-          {/* Virtual Rows */}
-          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          {/* Virtual Rows - while printing, a complete static table replaces the
+              virtualized window so every result row lands on paper (BUG-32) */}
+          {!printing && rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const row = data[virtualRow.index];
             if (!row) return null;
             const rowKey = rowKeyOf(row);
             const isBookmarked = bookmarkSet.has(rowKey);
+            const isConflicted = isBookmarked && conflictRowKeys.has(rowKey);
 
             return (
               <div
@@ -385,6 +433,7 @@ export default function VirtualTable({
                       index={virtualRow.index}
                       rowKey={rowKey}
                       isBookmarked={isBookmarked}
+                      isConflicted={isConflicted}
                       onToggleBookmark={onToggleBookmark}
                       onCopy={onCopyRow}
                       onCompare={onCompare}
@@ -401,6 +450,7 @@ export default function VirtualTable({
                     starWidth={STAR_WIDTH}
                     rowHeight={rowHeight}
                     isBookmarked={isBookmarked}
+                    isConflicted={isConflicted}
                     onToggleBookmark={onToggleBookmark}
                     onCopy={onCopyRow}
                     onCompare={onCompare}
@@ -414,6 +464,32 @@ export default function VirtualTable({
               </div>
             );
           })}
+
+          {/* Complete static table for print output (BUG-32) */}
+          {printing && !isMobile && (
+            <div aria-hidden="true">
+              {data.map((row, i) => (
+                <div
+                  key={rowKeyOf(row) || i}
+                  role="row"
+                  className={`flex border-b border-slate-200 ${i % 2 ? 'bg-slate-50' : 'bg-white'}`}
+                  style={{ width: `${effectiveTableWidth}px` }}
+                >
+                  <div className="shrink-0" style={{ width: `${STAR_WIDTH}px` }} />
+                  {[...columns].reverse().map((col) => (
+                    <div
+                      key={col}
+                      role="cell"
+                      className="min-w-0 truncate border-e border-slate-100 px-1 py-1 text-center text-[10.5px] leading-snug"
+                      style={cellStyle(col)}
+                    >
+                      <CellContent column={col} row={row} highlighter={highlighter} />
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Empty State with action buttons */}
@@ -450,6 +526,38 @@ export default function VirtualTable({
           />
         )}
       </div>
+
+      {/* Header facet panel - portaled so the scroll container can never clip it */}
+      {openFacetPanel?.variant === 'dropdown' && facetPortalStyle && createPortal(
+        <>
+          <div className="fixed inset-0 z-40 bg-transparent" onClick={() => setOpenFacetPanel(null)} />
+          <div
+            data-facet-panel
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label={`فیلتر ${fullLabelOf(openFacetPanel.column)}`}
+            className="fixed z-50 w-[19rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/20 animate-pop-in"
+            style={facetPortalStyle}
+          >
+            <FacetPanel
+              column={openFacetPanel.column}
+              values={facets[openFacetPanel.column] || []}
+              loading={!facets[openFacetPanel.column] && facetsLoading === openFacetPanel.column}
+              selected={filters[openFacetPanel.column] || []}
+              onToggle={(v) => {
+                const current = filters[openFacetPanel.column] || [];
+                const next = current.includes(v) ? current.filter((x) => x !== v) : [...current, v];
+                onFilterChange(openFacetPanel.column, next.length ? next : null);
+              }}
+              onClear={() => onFilterChange(openFacetPanel.column, null)}
+              onClose={() => setOpenFacetPanel(null)}
+              variant="header"
+              autoFocus
+            />
+          </div>
+        </>,
+        document.body,
+      )}
 
       {/* Back to Top floating button */}
       {showBackToTop && (

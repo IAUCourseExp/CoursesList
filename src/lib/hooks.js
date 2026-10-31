@@ -74,6 +74,48 @@ export function useScrollLock(locked) {
   }, [locked]);
 }
 
+/**
+ * Dialog focus behaviour shared by every overlay (BUG-13): focus moves into
+ * the dialog on open, Tab stays inside it while open, and focus returns to
+ * the previously focused element on close. Give the dialog container
+ * `tabIndex={-1}` so it can receive focus when it has no focusable children.
+ */
+export function useDialogFocus(containerRef) {
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return undefined;
+    const previous = document.activeElement;
+
+    const focusables = () => [...container.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )].filter((el) => el.getClientRects().length > 0 || el === document.activeElement);
+
+    const initial = focusables()[0] || container;
+    if (typeof initial.focus === 'function') initial.focus({ preventScroll: true });
+
+    const onKey = (e) => {
+      if (e.key !== 'Tab') return;
+      const list = focusables();
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !container.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !container.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    container.addEventListener('keydown', onKey);
+    return () => {
+      container.removeEventListener('keydown', onKey);
+      if (previous && typeof previous.focus === 'function') previous.focus();
+    };
+  }, [containerRef]);
+}
+
 /** True when the user asks for reduced motion, so decorative animation can be skipped. */
 export const usePrefersReducedMotion = () => useMediaQuery('(prefers-reduced-motion: reduce)');
 

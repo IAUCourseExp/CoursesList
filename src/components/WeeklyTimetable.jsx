@@ -5,6 +5,7 @@
 import React, { useMemo, useState } from 'react';
 import { parseSchedule, toFaDigits, FA_DAYS } from '../lib/datetime.js';
 import { faNum, rowKeyOf } from '../lib/format.js';
+import { timeSource } from '../lib/timeSource.js';
 import { DownloadIcon, CloseIcon, AlertIcon, CheckIcon, PrinterIcon, CalendarIcon, ListIcon } from './icons.jsx';
 
 const GRID_START_MIN = 7 * 60 + 30; // 07:30 (450)
@@ -122,7 +123,9 @@ export default function WeeklyTimetable({
 
       if (slots.length > 0) {
         slots.forEach((s, sIdx) => {
-          if (s.dayIndex !== null && s.startMinutes && s.endMinutes) {
+          // Number.isFinite instead of truthiness: a session starting at 00:00
+          // has startMinutes === 0 and used to vanish from the grid (BUG-15).
+          if (s.dayIndex !== null && Number.isFinite(s.startMinutes) && Number.isFinite(s.endMinutes) && s.endMinutes > s.startMinutes) {
             sched.push({
               course: c,
               key: `${key}-slot-${sIdx}`,
@@ -209,7 +212,7 @@ export default function WeeklyTimetable({
           <span>•</span>
           <span>مجموع واحد: {faNum(unitSummary?.totalUnits || 0)} واحد</span>
           <span>•</span>
-          <span>تاریخ گزارش: {new Date().toLocaleDateString('fa-IR')}</span>
+          <span>تاریخ گزارش: {new Date(timeSource.now()).toLocaleDateString('fa-IR')}</span>
         </div>
       </div>
 
@@ -360,15 +363,19 @@ export default function WeeklyTimetable({
 
                     {/* Render Course Sessions Side-By-Side */}
                     {dayItems.map(({ course, key, courseKey, from, to, startMinutes, endMinutes, isConflicted, slotCount, widthPct, leftPct, totalLanes }) => {
-                      const topPct = Math.max(0, ((startMinutes - GRID_START_MIN) / TOTAL_MIN) * 100);
-                      const heightPct = Math.max(
-                        6.5,
-                        ((endMinutes - startMinutes) / TOTAL_MIN) * 100
+                      // Clamp to the visible 07:30-20:30 grid; sessions extending
+                      // past its edge are announced by the overflow notice below
+                      // the grid and keep their exact times in the tooltip (BUG-15).
+                      const rawTopPct = ((startMinutes - GRID_START_MIN) / TOTAL_MIN) * 100;
+                      const rawHeightPct = ((endMinutes - startMinutes) / TOTAL_MIN) * 100;
+                      const topPct = Math.min(100, Math.max(0, rawTopPct));
+                      const heightPct = Math.min(
+                        Math.max(6.5, rawHeightPct),
+                        Math.max(0, 100 - topPct),
                       );
                       const title = course['نام درس'] || 'بدون نام';
                       const instructor = course['استاد'] || '';
                       const room = course['مكان برگزاري'] || '';
-                      const code = course['كد ارائه كلاس درس'] || '';
                       const palette = getPalette(title);
                       const isMultiLane = totalLanes > 1;
 
@@ -440,6 +447,13 @@ export default function WeeklyTimetable({
                 );
               })}
             </div>
+
+            {/* Sessions outside the visible grid get an explicit notice (BUG-15) */}
+            {scheduled.some((s) => s.endMinutes > GRID_END_MIN || s.startMinutes < GRID_START_MIN) && (
+              <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold leading-relaxed text-amber-800">
+                چند کلاس بیرون از بازهٔ نمایش ۰۷:۳۰ تا ۲۰:۳۰ قرار دارد و فقط تا لبهٔ جدول کشیده شده؛ ساعت دقیق هر جلسه در راهنمای ماوس همان کلاس آمده است.
+              </p>
+            )}
           </div>
         </div>
       )}

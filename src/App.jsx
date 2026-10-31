@@ -10,20 +10,26 @@ import ExamTimeline from './components/ExamTimeline.jsx';
 import CartDrawer from './components/CartDrawer.jsx';
 import CompareModal from './components/CompareModal.jsx';
 import CourseDetailModal from './components/CourseDetailModal.jsx';
+import SharedPlanDialog from './components/SharedPlanDialog.jsx';
+import SemesterConfirmDialog from './components/SemesterConfirmDialog.jsx';
+import LegacyBookmarkDialog from './components/LegacyBookmarkDialog.jsx';
 import { Chip, FilterChip, Segmented, SkeletonRows, Toast } from './components/Bits.jsx';
 import {
   CloseIcon, ColumnsIcon, DownloadIcon, FilterIcon, GridIcon, HeartIcon, HelpIcon,
   ListIcon, SearchIcon, SettingsIcon, SparkIcon, TelegramIcon, AlertIcon, CheckIcon,
   CartIcon, CalendarIcon, ClockIcon, BookOpenIcon, CompassIcon,
 } from './components/icons.jsx';
-import { faNum, courseToText, sortLabel, rowKeyOf } from './lib/format.js';
+import { faNum, courseToText, sortLabel, rowKeyOf, reconcileLegacyKeys } from './lib/format.js';
+import { sanitizeSharedKeys, computeImport, computeUndo } from './lib/shareImport.js';
 import { labelOf, pickColumns, resolveVisibleColumns, QUICK_FILTER_COLUMNS, isPhantom } from './lib/columns.js';
 import { detectConflicts, calculateUnits, generateIcsCalendar } from './lib/conflicts.js';
+import { loadSemesterConfig } from './lib/semester.js';
 import { timeSource } from './lib/timeSource.js';
 import { useDebounced, useIsMobile, useOnMount } from './lib/hooks.js';
 import {
   readJson, writeJson, readString, writeString, hasSeenTour,
   CACHE_KEY, WIDTHS_KEY, BOOKMARKS_KEY, DENSITY_KEY, COLUMNS_KEY, HINT_KEY,
+  TAB_KEY, SEMESTER_CONFIRM_KEY, LEGACY_KEY,
 } from './lib/storage.js';
 
 const LAST_UPDATE = import.meta.env.VITE_BUILD_TIME || 'تاریخ نامشخص';
@@ -41,13 +47,17 @@ const getInitialStateFromURL = () => {
   const params = new URLSearchParams(window.location.search);
   const q = params.get('q') || '';
   const sortCol = params.get('sort') || null;
-  const sortDir = params.get('dir') || 'asc';
+  // Only the two supported directions are accepted (BUG-28).
+  const sortDir = params.get('dir') === 'desc' ? 'desc' : 'asc';
 
   let filters = {};
   try {
     const f = params.get('f');
+    // URLSearchParams.get() has already decoded the value exactly once, which
+    // matches the params.set() write path - a second decodeURIComponent here
+    // used to wipe every restored filter when a value contained '%' (BUG-09).
     if (f) {
-      filters = JSON.parse(decodeURIComponent(f));
+      filters = JSON.parse(f);
       Object.keys(filters).forEach((key) => {
         if (!Array.isArray(filters[key])) filters[key] = [filters[key]];
       });
@@ -59,7 +69,10 @@ const getInitialStateFromURL = () => {
   let sharedBookmarks = null;
   try {
     const b = params.get('b');
-    if (b) sharedBookmarks = b.split('||').map(decodeURIComponent);
+    // searchParams.get() has already fully decoded the value; keys are split
+    // on the literal '||' separator and are NOT decoded again (BUG-01: a
+    // second decode would break every key containing a literal '%').
+    if (b) sharedBookmarks = b.split('||');
   } catch {
     sharedBookmarks = null;
   }
@@ -72,6 +85,20 @@ const getInitialStateFromURL = () => {
   };
 };
 
+/** Remove the shared-plan parameter from the address bar without touching
+ *  history (BUG-01): once an import is resolved the link must not re-trigger
+ *  the flow on refresh. */
+const clearShareParamFromUrl = () => {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('b')) return;
+    url.searchParams.delete('b');
+    window.history.replaceState({ view: true }, '', `${url.pathname}${url.search}`);
+  } catch {
+    // URL manipulation is best-effort; state handling never depends on it.
+  }
+};
+
 function App() {
   const isMobile = useIsMobile();
   const [initialCache] = useState(() => readJson(CACHE_KEY));
@@ -79,6 +106,9 @@ function App() {
 
   const [data, setData] = useState([]);
   const [masterData, setMasterData] = useState([]);
+  // False between DATA_LOADED and the first QUERY_RESULTS of that dataset:
+  // raw (un-normalized) rows must never paint in between (BUG-24).
+  const [rowsReady, setRowsReady] = useState(false);
   const [allColumns, setAllColumns] = useState([]);
   const [masterCount, setMasterCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -91,25 +121,30 @@ function App() {
   const [dataVersion, setDataVersion] = useState(0);
 
   // Active top-level view: 'table' | 'weekly' | 'exams'
-  const [activeTab, setActiveTab] = useState('table');
+  // The last used tab is remembered (ENH-5); invalid values fall back to the table.
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = readString(TAB_KEY);
+    return saved === 'weekly' || saved === 'exams' ? saved : 'table';
+  });
+  useEffect(() => {
+    writeString(TAB_KEY, activeTab);
+  }, [activeTab]);
   const [cartOpen, setCartOpen] = useState(false);
   const [comparingCourse, setComparingCourse] = useState(null);
 
   const [facets, setFacets] = useState({});
   const [facetsLoading, setFacetsLoading] = useState(null);
-  const [openQuickFacet, setOpenQuickFacet] = useState(null);
+  const [openFacetPanel, setOpenFacetPanel] = useState(null); // Unified: null | { column, variant: 'dropdown' | 'inline' | 'popover' }
 
   const [colWidths, setColWidths] = useState(() => readJson(WIDTHS_KEY) || {});
   const [selectedColumns, setSelectedColumns] = useState(() => readJson(COLUMNS_KEY));
   const [density, setDensity] = useState(() => readString(DENSITY_KEY) || 'comfortable');
 
-  const [bookmarks, setBookmarks] = useState(() => {
-    if (initState.sharedBookmarks) {
-      writeJson(BOOKMARKS_KEY, initState.sharedBookmarks);
-      return initState.sharedBookmarks;
-    }
-    return readJson(BOOKMARKS_KEY) || [];
-  });
+  // Bookmarks start from local storage only (BUG-01): a ?b= link may never
+  // touch saved data here. Shared plans are resolved by the import flow below.
+  const [bookmarks, setBookmarks] = useState(() => readJson(BOOKMARKS_KEY) || []);
+  const [pendingShare, setPendingShare] = useState(null); // validated shared keys awaiting a decision
+  const [toastAction, setToastAction] = useState(null); // { label, onClick } rendered inside the toast
   const [showBookmarksOnly, setShowBookmarksOnly] = useState(!!initState.sharedBookmarks);
 
   const [toastMessage, setToastMessage] = useState(null);
@@ -118,15 +153,190 @@ function App() {
   const [tourOpen, setTourOpen] = useState(() => !hasSeenTour());
   const [showHint, setShowHint] = useState(() => !readString(HINT_KEY));
   const [detailCourse, setDetailCourse] = useState(null);
+  // Approximate teaching-term presets (ISSUE 1): the owner keeps editable
+  // dates in public/semester.json; weekly events are only generated after the
+  // user confirms or edits the window in the export dialog. Exam events, which
+  // are exact, never need it.
+  const [semesterConfig, setSemesterConfig] = useState(null);
+  const [semesterDialogOpen, setSemesterDialogOpen] = useState(false);
+  const [confirmedSemesters, setConfirmedSemesters] = useState(() => readJson(SEMESTER_CONFIRM_KEY) || {});
+  useEffect(() => {
+    let cancelled = false;
+    loadSemesterConfig(import.meta.env.BASE_URL).then((cfg) => {
+      if (!cancelled && cfg) setSemesterConfig(cfg);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Blur search input when filter sheet opens on mobile (prevents virtual keyboard covering sheet)
+  useEffect(() => {
+    if (sheetOpen && searchRef.current) {
+      searchRef.current.blur();
+    }
+  }, [sheetOpen]);
 
   const workerRef = useRef(null);
-  const widthsRef = useRef(colWidths);
   const searchRef = useRef(null);
   const facetsRef = useRef({});
   const inFlightFacets = useRef(new Set());
+  const requestIdRef = useRef(0);
+  const updateStatusTimerRef = useRef(null);
 
   const debouncedTerm = useDebounced(searchTerm, 300);
+  const debouncedUrlTerm = useDebounced(searchTerm, 2000); // Longer debounce for URL sync
   const notify = useCallback((msg) => setToastMessage(msg), []);
+
+  /* Shared-plan import flow (BUG-01): a ?b= link may add, replace, or be
+   * declined explicitly - it can never silently overwrite saved selections.
+   * All persistence happens in these callbacks, never in state initializers,
+   * so StrictMode double-invocation cannot duplicate side effects. */
+  const bookmarksRef = useRef(bookmarks);
+  const dataRef = useRef(data);
+  const dataVersionRef = useRef(0);
+  const masterDataRef = useRef(masterData);
+  const undoDeltaRef = useRef(null);
+  useEffect(() => {
+    bookmarksRef.current = bookmarks;
+    dataRef.current = data;
+    dataVersionRef.current = dataVersion;
+    masterDataRef.current = masterData;
+  });
+
+  const persistBookmarks = useCallback((next) => {
+    const ok = writeJson(BOOKMARKS_KEY, next);
+    if (!ok) notify('ذخیره‌سازی دائمی در این مرورگر ممکن نشد؛ تغییرات فقط تا پایان همین جلسه می‌ماند.');
+    return ok;
+  }, [notify]);
+
+  // Legacy-key reconciliation (BUG-02 + ISSUE 2): bookmarks AND the pending
+  // legacy store are re-classified on every dataset change. Resolvable keys
+  // migrate automatically; ambiguous/missing ones move to the pending store
+  // and open the resolution dialog once per new pending set - postponement is
+  // honored via a fingerprint, so the same set never nags twice.
+  const [pendingLegacy, setPendingLegacy] = useState([]);
+  const [legacyDialogOpen, setLegacyDialogOpen] = useState(false);
+  const [legacyFingerprint, setLegacyFingerprint] = useState('');
+  const reconcileFingerprintRef = useRef('');
+  useEffect(() => {
+    if (masterData.length === 0) return;
+    const store = readJson(LEGACY_KEY) || { keys: [], dismissed: '' };
+    const combined = [...new Set([...bookmarks, ...store.keys])];
+    if (combined.length === 0) {
+      setPendingLegacy([]);
+      return;
+    }
+    const fingerprint = `${masterData.length}:${combined.join('|')}`;
+    if (reconcileFingerprintRef.current === fingerprint) return;
+    reconcileFingerprintRef.current = fingerprint;
+    const { activeKeys, pendingLegacy: pending, changed } = reconcileLegacyKeys(bookmarks, store.keys, masterData);
+    if (changed) {
+      reconcileFingerprintRef.current = `${masterData.length}:${activeKeys.join('|')}`;
+      setBookmarks(activeKeys);
+      persistBookmarks(activeKeys);
+    }
+    const nextFp = pending.map((u) => u.key).sort().join('|');
+    if (store.keys.join('|') !== nextFp) {
+      writeJson(LEGACY_KEY, { keys: pending.map((u) => u.key), dismissed: store.dismissed });
+    }
+    setPendingLegacy(pending);
+    setLegacyFingerprint(nextFp);
+    if (pending.length > 0 && store.dismissed !== nextFp) setLegacyDialogOpen(true);
+    if (pending.length === 0) setLegacyDialogOpen(false);
+  }, [masterData, bookmarks, persistBookmarks]);
+
+  const handleLegacyResolve = useCallback((legacyKey, compositeKeys) => {
+    const prev = bookmarksRef.current;
+    const next = [...prev];
+    for (const k of compositeKeys) if (!next.includes(k)) next.push(k);
+    setBookmarks(next);
+    persistBookmarks(next);
+    const store = readJson(LEGACY_KEY) || { keys: [], dismissed: '' };
+    const rest = store.keys.filter((k) => k !== legacyKey);
+    writeJson(LEGACY_KEY, { keys: rest, dismissed: store.dismissed });
+    setPendingLegacy((list) => list.filter((u) => u.key !== legacyKey));
+    if (rest.length === 0) setLegacyDialogOpen(false);
+    notify(compositeKeys.length === 1
+      ? 'نشان قدیمی به‌روزرسانی و به سبد اضافه شد.'
+      : `${faNum(compositeKeys.length)} گروه به سبد اضافه شد؛ نشان قدیمی تکلیف شد.`);
+  }, [notify, persistBookmarks]);
+
+  const handleLegacyRemove = useCallback((legacyKey) => {
+    const store = readJson(LEGACY_KEY) || { keys: [], dismissed: '' };
+    const rest = store.keys.filter((k) => k !== legacyKey);
+    writeJson(LEGACY_KEY, { keys: rest, dismissed: store.dismissed });
+    setPendingLegacy((list) => list.filter((u) => u.key !== legacyKey));
+    if (rest.length === 0) setLegacyDialogOpen(false);
+    notify('نشان قدیمی حذف شد.');
+  }, [notify]);
+
+  const handleLegacyPostpone = useCallback(() => {
+    const store = readJson(LEGACY_KEY) || { keys: [], dismissed: '' };
+    writeJson(LEGACY_KEY, { keys: store.keys, dismissed: legacyFingerprint });
+    setLegacyDialogOpen(false);
+  }, [legacyFingerprint]);
+
+  const undoImport = useCallback(() => {
+    const delta = undoDeltaRef.current;
+    if (!delta) return;
+    undoDeltaRef.current = null;
+    setToastMessage(null);
+    setToastAction(null);
+    const next = computeUndo(delta, bookmarksRef.current);
+    setBookmarks(next);
+    persistBookmarks(next);
+    notify('انتخاب‌های قبلی بازگردانی شد.');
+  }, [notify, persistBookmarks]);
+
+  const applyImport = useCallback((mode, sharedKeys) => {
+    const result = computeImport(mode, bookmarksRef.current, sharedKeys);
+    undoDeltaRef.current = (result.added.length > 0 || result.removed.length > 0)
+      ? { added: result.added, removed: result.removed }
+      : null;
+    setBookmarks(result.keys);
+    persistBookmarks(result.keys);
+    setPendingShare(null);
+    setShowBookmarksOnly(true);
+    clearShareParamFromUrl();
+    if (undoDeltaRef.current) {
+      setToastAction({ label: 'بازگردانی انتخاب‌های قبلی', onClick: undoImport });
+      notify(mode === 'replace'
+        ? `برنامهٔ اشتراکی (${faNum(sharedKeys.length)} درس) جایگزین انتخاب‌های قبلی شد.`
+        : `${faNum(result.added.length)} درس از برنامهٔ اشتراکی به انتخاب‌های شما اضافه شد.`);
+    } else {
+      notify(mode === 'replace'
+        ? 'این برنامه از قبل با انتخاب‌های شما یکسان بود.'
+        : 'درس‌های این لینک از قبل در فهرست شما هستند.');
+    }
+  }, [notify, persistBookmarks, undoImport]);
+
+  const cancelShare = useCallback(() => {
+    setPendingShare(null);
+    setShowBookmarksOnly(false);
+    clearShareParamFromUrl();
+  }, []);
+
+  // Decide what a shared link means exactly once per page load.
+  const shareInitRef = useRef(false);
+  useEffect(() => {
+    if (shareInitRef.current) return;
+    shareInitRef.current = true;
+    const shared = sanitizeSharedKeys(initState.sharedBookmarks);
+    if (!shared) {
+      if (initState.sharedBookmarks) {
+        clearShareParamFromUrl();
+        notify('لینک برنامهٔ اشتراکی معتبر نیست.');
+      }
+      return;
+    }
+    if (bookmarksRef.current.length === 0) {
+      applyImport('replace', shared);
+      return;
+    }
+    const localSet = new Set(bookmarksRef.current);
+    const identical = shared.length === localSet.size && shared.every((k) => localSet.has(k));
+    if (identical) clearShareParamFromUrl();
+    else setPendingShare(shared);
+  }, [applyImport, notify, initState.sharedBookmarks]);
 
   /* Worker setup */
   useEffect(() => {
@@ -145,7 +355,10 @@ function App() {
 
       if (type === 'DATA_LOADED') {
         const fullRows = payload.data || [];
-        setData(fullRows);
+        // Keep the visible table on the normalized query pipeline (BUG-24):
+        // master data is stored raw, display rows arrive via QUERY_RESULTS.
+        setData([]);
+        setRowsReady(false);
         setMasterData(fullRows);
         setAllColumns(payload.columns || []);
         setMasterCount(fullRows.length);
@@ -154,17 +367,35 @@ function App() {
         setDataVersion((v) => v + 1);
         if (payload.csvText) writeJson(CACHE_KEY, { csv: payload.csvText, savedAt: Date.now() });
 
+        // Clear facets when data changes (BUG-006)
+        if (payload.changed) {
+          setFacets({});
+          facetsRef.current = {};
+        }
+
         if (payload.source === 'cache') setStatus('checking');
         else if (payload.changed) {
           setStatus('updated');
-          setTimeout(() => setStatus((s) => (s === 'updated' ? 'uptodate' : s)), 4000);
+          updateStatusTimerRef.current = setTimeout(() => setStatus((s) => (s === 'updated' ? 'uptodate' : s)), 4000);
         } else setStatus('uptodate');
       } else if (type === 'STATUS') {
         if (payload.fresh) setStatus('uptodate');
       } else if (type === 'QUERY_RESULTS') {
+        // Discard stale responses from older requests
+        if (payload.stale || (payload.requestId !== undefined && payload.requestId < requestIdRef.current)) {
+          return;
+        }
         setData(payload.rows || []);
+        setRowsReady(true);
         setIsLoading(false);
       } else if (type === 'FACETS_RESULT') {
+        // Discard facet results computed against an older dataset (BUG-28),
+        // mirroring the stale-query guard, without stranding the spinner.
+        if (payload.dataVersion !== undefined && payload.dataVersion !== dataVersionRef.current) {
+          inFlightFacets.current.delete(payload.column);
+          setFacetsLoading((current) => (current === payload.column ? null : current));
+          return;
+        }
         inFlightFacets.current.delete(payload.column);
         setFacets((prev) => {
           const next = { ...prev, [payload.column]: payload.values };
@@ -174,15 +405,14 @@ function App() {
         setFacetsLoading((current) => (current === payload.column ? null : current));
       } else if (type === 'ERROR') {
         setIsLoading(false);
-        setData((current) => {
-          if (current.length > 0) {
-            setStatus('offline');
-            notify('اتصال برقرار نشد؛ نسخهٔ ذخیره‌شدهٔ همین دستگاه نمایش داده می‌شود.');
-            return current;
-          }
+        // Keep updaters pure (BUG-23): decide from the current data length
+        // captured in a ref instead of calling setState inside setData.
+        if (dataRef.current.length > 0) {
+          setStatus('offline');
+          notify('اتصال برقرار نشد؛ نسخهٔ ذخیره‌شدهٔ همین دستگاه نمایش داده می‌شود.');
+        } else {
           setLoadError(payload.message);
-          return current;
-        });
+        }
       }
     };
 
@@ -192,6 +422,7 @@ function App() {
     });
 
     return () => {
+      clearTimeout(updateStatusTimerRef.current);
       worker.onmessage = null;
       worker.terminate();
       workerRef.current = null;
@@ -202,16 +433,17 @@ function App() {
   useEffect(() => {
     const worker = workerRef.current;
     if (!worker || dataVersion === 0) return;
+    const reqId = ++requestIdRef.current;
     worker.postMessage({
       type: 'QUERY',
-      payload: { search: debouncedTerm, filters, sort: sortConfig },
+      payload: { search: debouncedTerm, filters, sort: sortConfig, requestId: reqId, dataVersion },
     });
   }, [debouncedTerm, filters, sortConfig, dataVersion]);
 
-  /* URL sync */
+  /* URL sync - search term debounced longer (2s) to avoid history pollution; filters/sort immediate */
   useEffect(() => {
     const params = new URLSearchParams();
-    if (debouncedTerm.trim()) params.set('q', debouncedTerm.trim());
+    if (debouncedUrlTerm.trim()) params.set('q', debouncedUrlTerm.trim());
     if (sortConfig.column) {
       params.set('sort', sortConfig.column);
       params.set('dir', sortConfig.direction);
@@ -219,7 +451,7 @@ function App() {
     if (Object.keys(filters).length) params.set('f', JSON.stringify(filters));
     const url = `${window.location.pathname}${params.toString() ? `?${params}` : ''}`;
     window.history.replaceState({ view: true }, '', url);
-  }, [debouncedTerm, filters, sortConfig]);
+  }, [debouncedUrlTerm, filters, sortConfig]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -232,41 +464,94 @@ function App() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  /* Keyboard shortcuts */
+  /* Overlay stack + keyboard shortcuts.
+   * One Escape priority list for every dismissible overlay (BUG-06/BUG-10):
+   * only the topmost entry closes per keypress. Share-import confirmation is
+   * deliberately first so a pending ?b= decision always wins. */
+  const overlayStackRef = useRef([]);
+  useEffect(() => {
+    overlayStackRef.current = [
+      pendingShare && 'share',
+      semesterDialogOpen && 'semester',
+      legacyDialogOpen && 'legacy',
+      detailCourse && 'detail',
+      comparingCourse && 'compare',
+      cartOpen && 'cart',
+      sheetOpen && 'sheet',
+      helpOpen && 'help',
+      tourOpen && 'tour',
+      openFacetPanel && 'facets',
+    ].filter(Boolean);
+  });
+
   useEffect(() => {
     const onKey = (e) => {
       const tag = document.activeElement?.tagName;
-      const typing = tag === 'INPUT' || tag === 'TEXTAREA';
+      const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+        || document.activeElement?.isContentEditable === true;
+      const key = e.key.toLowerCase();
+
+      if (e.key === 'Escape') {
+        // The search box keeps its dedicated behaviour: Escape clears it.
+        if (document.activeElement === searchRef.current) {
+          setSearchTerm('');
+          return;
+        }
+        const top = overlayStackRef.current[0];
+        if (!top) return;
+        if (top === 'share') { cancelShare(); return; }
+        if (top === 'semester') { handleSemesterCancel(); return; }
+        if (top === 'legacy') { handleLegacyPostpone(); return; }
+        if (top === 'detail') { setDetailCourse(null); return; }
+        if (top === 'compare') { setComparingCourse(null); return; }
+        if (top === 'cart') { setCartOpen(false); return; }
+        if (top === 'sheet') { setSheetOpen(false); return; }
+        if (top === 'help') { setHelpOpen(false); return; }
+        if (top === 'tour') { setTourOpen(false); return; }
+        if (top === 'facets') { setOpenFacetPanel(null); return; }
+        return;
+      }
+
       if (e.key === '/' && !typing) {
         e.preventDefault();
         searchRef.current?.focus();
-      } else if (e.key === 'Escape' && typing && document.activeElement === searchRef.current) {
-        setSearchTerm('');
-      } else if (e.key.toLowerCase() === 'b' && (e.ctrlKey || e.metaKey)) {
+      } else if (key === 'k' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        searchRef.current?.focus();
+      } else if (key === 'b' && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setCartOpen(true);
+      } else if (key === 'b' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         setShowBookmarksOnly((v) => !v);
+      } else if (e.key === '?' && !typing) {
+        e.preventDefault();
+        setHelpOpen(true);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+    // The two dialog-cancel callbacks are stable useCallbacks declared later in
+    // this component; Escape handling reads them at call time, not mount time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cancelShare]);
 
   /* Dismiss toolbar popovers */
   useEffect(() => {
-    if (!openQuickFacet) return undefined;
+    if (!openFacetPanel) return undefined;
     const onDown = (e) => {
       if (!e.target.closest?.('[data-facet-panel],[data-facet-toggle],[data-columns-toggle]')) {
-        setOpenQuickFacet(null);
+        setOpenFacetPanel(null);
       }
     };
-    const onKey = (e) => { if (e.key === 'Escape') setOpenQuickFacet(null); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpenFacetPanel(null); };
     document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('pointerdown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [openQuickFacet]);
+  }, [openFacetPanel]);
 
   /* Derived data */
   const visibleColumns = useMemo(
@@ -336,6 +621,8 @@ function App() {
 
   useEffect(() => {
     if (dataVersion === 0) return;
+    // Clear in-flight facets when data version changes, so facets can be re-fetched
+    inFlightFacets.current.clear();
     for (const col of pickColumns(allColumns, QUICK_FILTER_COLUMNS)) {
       if (!facetsRef.current[col] && !inFlightFacets.current.has(col)) {
         inFlightFacets.current.add(col);
@@ -356,14 +643,12 @@ function App() {
       const next = { ...prev };
       if (width == null) delete next[col];
       else next[col] = width;
-      widthsRef.current = next;
       return next;
     });
   }, []);
 
-  const persistWidths = useCallback(() => writeJson(WIDTHS_KEY, widthsRef.current), []);
+  const persistWidths = useCallback(() => writeJson(WIDTHS_KEY, colWidths), [colWidths]);
   const resetAllWidths = useCallback(() => {
-    widthsRef.current = {};
     setColWidths({});
     writeJson(WIDTHS_KEY, {});
   }, []);
@@ -384,20 +669,50 @@ function App() {
   }, []);
 
   const toggleBookmark = useCallback((rowKey) => {
-    setBookmarks((prev) => {
-      const next = prev.includes(rowKey)
-        ? prev.filter((id) => id !== rowKey)
-        : [...prev, rowKey];
-      writeJson(BOOKMARKS_KEY, next);
-      return next;
-    });
-  }, []);
+    const prev = bookmarksRef.current;
+    const isAdding = !prev.includes(rowKey);
+    const next = isAdding
+      ? [...prev, rowKey]
+      : prev.filter((id) => id !== rowKey);
+    setBookmarks(next);
+    persistBookmarks(next);
+
+    // ENH-1: tell the student about a NEW clash the moment it is created,
+    // instead of leaving them to discover it inside the cart later.
+    if (isAdding && masterDataRef.current.length > 0) {
+      const rowsFor = (keys) => {
+        const set = new Set(keys);
+        return masterDataRef.current.filter((r) => set.has(rowKeyOf(r)));
+      };
+      const fresh = detectConflicts(rowsFor(next));
+      const pair = fresh.scheduleConflicts.find((c) => c.keyA === rowKey || c.keyB === rowKey);
+      if (pair) {
+        const other = pair.keyA === rowKey ? pair.titleB : pair.titleA;
+        notify(`⚠ تداخل ساعت کلاس با «${other}» (${pair.day}، ${pair.timeA}).`);
+      } else {
+        const examPair = fresh.examConflicts.find((c) => c.keyA === rowKey || c.keyB === rowKey);
+        if (examPair) {
+          const other = examPair.keyA === rowKey ? examPair.titleB : examPair.titleA;
+          notify(`⚠ هم‌زمانی امتحان با «${other}» در تاریخ ${examPair.date}.`);
+        }
+      }
+    }
+  }, [persistBookmarks, notify]);
 
   const handleClearAllBookmarks = useCallback(() => {
+    const prev = bookmarksRef.current;
+    if (prev.length === 0) {
+      notify('سبد انتخاب از قبل خالی است.');
+      return;
+    }
     setBookmarks([]);
-    writeJson(BOOKMARKS_KEY, []);
+    persistBookmarks([]);
+    // ENH-3: the destructive action gets an undo window via the same delta
+    // mechanism as shared-plan imports.
+    undoDeltaRef.current = { added: [], removed: prev };
+    setToastAction({ label: 'بازگردانی دروس', onClick: undoImport });
     notify('تمام دروس نشانه‌گذاری‌شده پاک شدند.');
-  }, [notify]);
+  }, [notify, persistBookmarks, undoImport]);
 
   const handleCopy = useCallback(async (row) => {
     const text = courseToText(row);
@@ -411,7 +726,16 @@ function App() {
   }, [notify]);
 
   const handleShare = useCallback(async () => {
-    const shareUrl = `${window.location.origin}${window.location.pathname}?b=${bookmarks.map(encodeURIComponent).join('||')}`;
+    if (bookmarks.length === 0) {
+      notify('هنوز درسی انتخاب نکرده‌اید؛ چند درس را نشانه‌گذاری کنید تا لینک برنامه ساخته شود.');
+      return;
+    }
+    // Producer contract (shared with CartDrawer): set the raw '||'-joined keys
+    // via searchParams; URLSearchParams handles all escaping symmetrically.
+    const shareUrlObj = new URL(window.location.href);
+    shareUrlObj.search = '';
+    shareUrlObj.searchParams.set('b', bookmarks.join('||'));
+    const shareUrl = shareUrlObj.toString();
     try {
       await navigator.clipboard.writeText(shareUrl);
       notify('لینک برنامهٔ درسی کپی شد؛ برای دوستانت بفرست 🔗');
@@ -420,12 +744,13 @@ function App() {
     }
   }, [bookmarks, notify]);
 
-  const handleExportIcs = useCallback(() => {
-    if (bookmarkedCourses.length === 0) {
-      notify('ابتدا دروسی را به سبد نشانه‌گذاری اضافه کنید.');
-      return;
-    }
-    const icsContent = generateIcsCalendar(bookmarkedCourses);
+  const exportIcs = useCallback((windowDates) => {
+    const icsContent = generateIcsCalendar(bookmarkedCourses, {
+      semester: windowDates
+        ? { semesterStart: windowDates.semesterStart, teachingEnd: windowDates.teachingEnd }
+        : null,
+      nowMs: timeSource.now(),
+    });
     const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -434,8 +759,41 @@ function App() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(link.href);
-    notify('فایل تقویم (.ics) با موفقیت دانلود شد.');
+    notify(windowDates
+      ? 'فایل تقویم شامل کلاس‌های هفتگی و امتحانات دانلود شد.'
+      : 'فایل تقویم شامل رویدادهای امتحان دانلود شد.');
   }, [bookmarkedCourses, notify]);
+
+  const handleExportIcs = useCallback(() => {
+    if (bookmarkedCourses.length === 0) {
+      notify('ابتدا دروسی را به سبد نشانه‌گذاری اضافه کنید.');
+      return;
+    }
+    // Approximate presets exist: the user must see and confirm (or edit) the
+    // window before weekly events are generated (ISSUE 1). Without a config
+    // the export stays exam-only, which needs no dates.
+    if (semesterConfig) {
+      setSemesterDialogOpen(true);
+      return;
+    }
+    exportIcs(null);
+    notify('فایل تقویم شامل رویدادهای امتحان دانلود شد؛ برای افزودن کلاس‌های هفتگی، تاریخ‌های تقریبی ترم باید توسط مدیر سامانه در semester.json تنظیم شود.');
+  }, [bookmarkedCourses, semesterConfig, exportIcs, notify]);
+
+  const handleSemesterConfirm = useCallback((w) => {
+    const next = { ...confirmedSemesters, [w.type]: { startText: w.startText, endText: w.endText } };
+    setConfirmedSemesters(next);
+    writeJson(SEMESTER_CONFIRM_KEY, next);
+    setSemesterDialogOpen(false);
+    exportIcs(w);
+  }, [confirmedSemesters, exportIcs]);
+
+  const handleSemesterExamOnly = useCallback(() => {
+    setSemesterDialogOpen(false);
+    exportIcs(null);
+  }, [exportIcs]);
+
+  const handleSemesterCancel = useCallback(() => setSemesterDialogOpen(false), []);
 
   const toggleBookmarksOnly = useCallback(() => setShowBookmarksOnly((v) => !v), []);
 
@@ -457,12 +815,13 @@ function App() {
   }[status];
 
   return (
-    <div className="relative flex h-[100dvh] w-full flex-col overflow-hidden bg-gradient-to-b from-slate-50 via-white to-blue-50/40">
+    <div className="app-shell relative flex w-full flex-col overflow-hidden bg-gradient-to-b from-slate-50 via-white to-blue-50/40">
       {/* ── Ambient Gemini-style Mesh Gradient Canvas ───────────────────────── */}
       <div className="gemini-ambient-canvas" aria-hidden="true" />
 
       {/* ── Header ───────────────────────────────────────────────────────────── */}
-      <header className="relative z-30 flex-none border-b border-slate-200/70 bg-white/90 px-3 py-2 backdrop-blur-xl md:px-5">
+      {/* pt respects the notch/status bar on notched phones (viewport-fit=cover, BUG-20) */}
+      <header className="relative z-30 flex-none border-b border-slate-200/70 bg-white/90 px-3 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] backdrop-blur-xl md:px-5">
         {/* Desktop Single-Row Header (lg and above) */}
         <div className="hidden lg:flex mx-auto w-full max-w-[110rem] items-center gap-2 lg:gap-3">
           <div className="premium-nav-matrix shrink-0 overflow-hidden">
@@ -477,7 +836,7 @@ function App() {
           </div>
 
           <span className="hidden shrink-0 items-center gap-1 rounded-full border border-blue-200/70 bg-blue-50/90 px-2.5 py-1 text-[11px] font-extrabold text-blue-700 xl:inline-flex">
-            <span className="opacity-70">🔄</span> {LAST_UPDATE}
+            <span className="opacity-70">🏷️</span> ساخت سایت: {LAST_UPDATE}
           </span>
 
           {/* View Mode Navigation Tabs */}
@@ -708,7 +1067,7 @@ function App() {
             <button
               type="button"
               onClick={() => setActiveTab('table')}
-              className={`inline-flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-black transition-all ${
+              className={`inline-flex items-center justify-center gap-1 rounded-lg py-1.5 min-h-9 text-xs font-black transition-all ${
                 activeTab === 'table'
                   ? 'bg-white text-blue-700 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -721,7 +1080,7 @@ function App() {
             <button
               type="button"
               onClick={() => setActiveTab('weekly')}
-              className={`relative inline-flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-black transition-all ${
+              className={`relative inline-flex items-center justify-center gap-1 rounded-lg py-1.5 min-h-9 text-xs font-black transition-all ${
                 activeTab === 'weekly'
                   ? 'bg-white text-blue-700 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -742,7 +1101,7 @@ function App() {
             <button
               type="button"
               onClick={() => setActiveTab('exams')}
-              className={`inline-flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-black transition-all ${
+              className={`inline-flex items-center justify-center gap-1 rounded-lg py-1.5 min-h-9 text-xs font-black transition-all ${
                 activeTab === 'exams'
                   ? 'bg-white text-blue-700 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -816,17 +1175,17 @@ function App() {
                           {/* Column Visibility Menu */}
                           <div className="relative">
                             <button type="button" data-columns-toggle
-                              onClick={() => setOpenQuickFacet(openQuickFacet === '__columns' ? null : '__columns')}
-                              aria-expanded={openQuickFacet === '__columns'}
+                              onClick={() => setOpenFacetPanel(openFacetPanel?.column === '__columns' ? null : { column: '__columns', variant: 'dropdown' })}
+                              aria-expanded={openFacetPanel?.column === '__columns'}
                               className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2.5 text-[12px] font-bold text-slate-600 transition-colors hover:border-blue-300 hover:text-blue-700">
                               <ColumnsIcon className="size-4" />
                               ستون‌ها
                               <span className="rounded-full bg-slate-100 px-1.5 text-[11px] text-slate-500">{faNum(visibleColumns.length)}</span>
                             </button>
 
-                            {openQuickFacet === '__columns' && (
+                            {openFacetPanel?.column === '__columns' && (
                               <>
-                                <div className="fixed inset-0 z-40 bg-transparent" onClick={() => setOpenQuickFacet(null)} />
+                                <div className="fixed inset-0 z-40 bg-transparent" onClick={() => setOpenFacetPanel(null)} />
                                 <div data-facet-panel onClick={(e) => e.stopPropagation()}
                                   className="absolute end-0 top-full z-50 mt-1.5 w-[21rem] max-w-[calc(100vw-1rem)] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl shadow-slate-900/20 animate-pop-in">
                                   <ColumnPicker allColumns={realColumns} visible={visibleColumns}
@@ -852,14 +1211,14 @@ function App() {
                     <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 hide-scrollbar">
                       {!isMobile && quickColumns.map((col) => {
                         const selected = filters[col] || [];
-                        const isOpen = openQuickFacet === col;
+                        const isOpen = openFacetPanel?.column === col;
                         return (
                           <button
                             key={col}
                             type="button"
                             data-facet-toggle
                             onClick={() => {
-                              setOpenQuickFacet(isOpen ? null : col);
+                              setOpenFacetPanel(isOpen ? null : { column: col, variant: 'inline' });
                               ensureFacets(col);
                             }}
                             aria-expanded={isOpen}
@@ -898,28 +1257,30 @@ function App() {
                       )}
                     </div>
 
-                    {/* Dedicated outside popover layer for quick facet filter (NEVER clipped) */}
-                    {openQuickFacet && openQuickFacet !== '__columns' && (
+                    {/* Dedicated outside popover layer for quick facet filters (NEVER clipped).
+                        Only variant 'inline' (toolbar chips) renders here; header dropdowns are
+                        portaled by VirtualTable so the same state never draws two panels. */}
+                    {openFacetPanel && openFacetPanel.column !== '__columns' && openFacetPanel.variant === 'inline' && (
                       <>
-                        <div className="fixed inset-0 z-40 bg-transparent" onClick={() => setOpenQuickFacet(null)} />
+                        <div className="fixed inset-0 z-40 bg-transparent" onClick={() => setOpenFacetPanel(null)} />
                         <div
                           data-facet-panel
                           onClick={(e) => e.stopPropagation()}
                           className="absolute start-0 top-full z-50 mt-1.5 w-[19rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/20 animate-pop-in"
                         >
                           <FacetPanel
-                            column={openQuickFacet}
-                            values={facets[openQuickFacet] || []}
-                            loading={facetsLoading === openQuickFacet}
-                            selected={filters[openQuickFacet] || []}
-                            onClose={() => setOpenQuickFacet(null)}
-                            onClear={() => handleFilterChange(openQuickFacet, null)}
+                            column={openFacetPanel.column}
+                            values={facets[openFacetPanel.column] || []}
+                            loading={facetsLoading === openFacetPanel.column}
+                            selected={filters[openFacetPanel.column] || []}
+                            onClose={() => setOpenFacetPanel(null)}
+                            onClear={() => handleFilterChange(openFacetPanel.column, null)}
                             onToggle={(v) => {
-                              const selected = filters[openQuickFacet] || [];
+                              const selected = filters[openFacetPanel.column] || [];
                               const next = selected.includes(v)
                                 ? selected.filter((x) => x !== v)
                                 : [...selected, v];
-                              handleFilterChange(openQuickFacet, next.length ? next : null);
+                              handleFilterChange(openFacetPanel.column, next.length ? next : null);
                             }}
                             variant="inline"
                           />
@@ -939,11 +1300,11 @@ function App() {
                         )}
                       </p>
                       <button type="button" onClick={() => setHelpOpen(true)}
-                        className="hidden shrink-0 rounded-lg px-2 py-1 text-[11.5px] font-bold text-blue-700 underline-offset-2 hover:underline sm:block">
+                        className="hidden shrink-0 rounded-lg px-2 py-1 min-h-9 text-[11.5px] font-bold text-blue-700 underline-offset-2 hover:underline sm:block">
                         راهنما
                       </button>
                       <button type="button" onClick={dismissHint} aria-label="بستن راهنمای اولیه"
-                        className="grid size-7 shrink-0 place-items-center rounded-lg text-blue-500 transition-colors hover:bg-blue-100">
+                        className="grid size-9 shrink-0 place-items-center rounded-lg text-blue-500 transition-colors hover:bg-blue-100">
                         <CloseIcon className="size-3.5" />
                       </button>
                     </div>
@@ -952,9 +1313,9 @@ function App() {
 
                 {/* Table Data View */}
                 <div className="relative min-h-0 flex-1">
-                  {isLoading ? (
-                    <SkeletonRows isMobile={isMobile} />
-                  ) : loadError ? (
+                {isLoading || (!rowsReady && !loadError) ? (
+                  <SkeletonRows isMobile={isMobile} />
+                ) : loadError ? (
                     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
                       <span className="text-4xl">⚠️</span>
                       <p className="text-[14px] font-extrabold text-slate-700">خطا در بارگذاری داده‌ها</p>
@@ -982,6 +1343,7 @@ function App() {
                       onWidthsCommit={persistWidths}
                       density={density}
                       bookmarks={bookmarks}
+                      conflictRowKeys={conflictData.conflictRowKeys}
                       onToggleBookmark={toggleBookmark}
                       onCopyRow={handleCopy}
                       onCompare={(c) => setComparingCourse(c)}
@@ -990,6 +1352,8 @@ function App() {
                       onClearSearch={() => setSearchTerm('')}
                       hasSearch={!!debouncedTerm}
                       searchTerm={debouncedTerm}
+                      openFacetPanel={openFacetPanel}
+                      setOpenFacetPanel={setOpenFacetPanel}
                     />
                   )}
                 </div>
@@ -1071,6 +1435,8 @@ function App() {
           totalCount={masterCount}
           csvUrl={CSV_URL}
           filename={DOWNLOAD_NAME}
+          openFacetPanel={openFacetPanel}
+          setOpenFacetPanel={setOpenFacetPanel}
         />
       )}
 
@@ -1098,7 +1464,29 @@ function App() {
         onExportIcs={handleExportIcs}
         onNotify={notify}
         onOpenCompare={(c) => { setCartOpen(false); setComparingCourse(c); }}
+        pendingLegacyCount={pendingLegacy.length}
+        onOpenLegacy={() => setLegacyDialogOpen(true)}
       />
+
+      {semesterDialogOpen && semesterConfig && (
+        <SemesterConfirmDialog
+          config={semesterConfig}
+          confirmedByType={confirmedSemesters}
+          onConfirm={handleSemesterConfirm}
+          onExamOnly={handleSemesterExamOnly}
+          onCancel={handleSemesterCancel}
+        />
+      )}
+
+      {legacyDialogOpen && pendingLegacy.length > 0 && (
+        <LegacyBookmarkDialog
+          pendingLegacy={pendingLegacy}
+          masterData={masterData}
+          onResolve={handleLegacyResolve}
+          onRemove={handleLegacyRemove}
+          onPostpone={handleLegacyPostpone}
+        />
+      )}
 
       {comparingCourse && (
         <CompareModal
@@ -1125,7 +1513,22 @@ function App() {
         />
       )}
 
-      <Toast message={toastMessage} onDone={() => setToastMessage(null)} />
+      {pendingShare && (
+        <SharedPlanDialog
+          shared={pendingShare}
+          localCount={bookmarks.length}
+          onReplace={() => applyImport('replace', pendingShare)}
+          onMerge={() => applyImport('merge', pendingShare)}
+          onCancel={cancelShare}
+        />
+      )}
+
+      <Toast
+        message={toastMessage}
+        onDone={() => { setToastMessage(null); setToastAction(null); }}
+        action={toastAction}
+        duration={toastAction ? 8000 : 3200}
+      />
     </div>
   );
 }

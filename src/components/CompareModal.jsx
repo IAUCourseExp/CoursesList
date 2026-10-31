@@ -2,11 +2,12 @@
 // Compares all sections/instructors of the same course side-by-side,
 // making it easy for students to pick the best schedule and professor.
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { CloseIcon, UserIcon, ClockIcon, PinIcon, CheckIcon } from './icons.jsx';
 import { faNum, rowKeyOf, genderOf, GENDER_LABEL, isBlank } from '../lib/format.js';
 import { parseSchedule, parseExam, toFaDigits } from '../lib/datetime.js';
 import { canonical } from '../lib/columns.js';
+import { useScrollLock, useDialogFocus } from '../lib/hooks.js';
 
 export default function CompareModal({
   course,
@@ -26,14 +27,29 @@ export default function CompareModal({
     return matches.length > 0 ? matches : (course ? [course] : []);
   }, [targetCanon, allCourses, course]);
 
+  // Dialog behaviour is owned here while the component is mounted; when the
+  // modal is closed (course === null) the refs stay empty and the effects no-op.
+  const containerRef = useRef(null);
+  useScrollLock(true);
+  useDialogFocus(containerRef);
+
   if (!course) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-6 backdrop-blur-xs animate-fade-in" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-6 backdrop-blur-xs animate-fade-in">
+      <button
+        type="button"
+        aria-label="بستن مقایسه"
+        onClick={onClose}
+        className="absolute inset-0 cursor-default bg-slate-900/60 backdrop-blur-xs"
+      />
       <div
-        className="flex max-h-[90vh] w-full max-w-4xl flex-col rounded-3xl bg-white shadow-2xl animate-pop-in"
+        ref={containerRef}
+        tabIndex={-1}
+        className="relative flex max-h-[90dvh] w-full max-w-4xl flex-col rounded-3xl bg-white shadow-2xl animate-pop-in outline-none"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
+        aria-modal="true"
         aria-label={`مقایسه اساتید و گروه‌های درس ${courseName}`}
       >
         {/* Header */}
@@ -132,13 +148,23 @@ export default function CompareModal({
 
                       <div>
                         <span className="text-[11px] font-bold text-slate-400">ساعت کلاس:</span>
-                        <div className="mt-0.5 font-bold text-slate-800 flex items-center gap-1">
-                          <ClockIcon className="size-3.5 text-blue-500 shrink-0" />
-                          <span>
-                            {sched
-                              ? `${sched.day} ${toFaDigits(sched.from)} تا ${toFaDigits(sched.to)}`
-                              : sec['زمانبندي تشكيل كلاس'] || 'نامشخص'}
-                          </span>
+                        {/* All weekly meetings of this section, not just the first slot (BUG-11). */}
+                        <div className="mt-0.5 font-bold text-slate-800 flex flex-col items-start gap-0.5">
+                          {sched
+                            ? sched.slots.map((s, i) => (
+                              <span key={i} className="flex items-center gap-1">
+                                <ClockIcon className="size-3.5 text-blue-500 shrink-0" />
+                                <span>
+                                  {s.day} {toFaDigits(s.from)} تا {toFaDigits(s.to)}
+                                </span>
+                              </span>
+                            ))
+                            : (
+                              <span className="flex items-center gap-1">
+                                <ClockIcon className="size-3.5 text-blue-500 shrink-0" />
+                                <span>{sec['زمانبندي تشكيل كلاس'] || 'نامشخص'}</span>
+                              </span>
+                            )}
                         </div>
                       </div>
 

@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: '/CoursesList/',
+  base: process.env.NODE_ENV === 'production' ? '/CoursesList/' : '/',
   server: {
     allowedHosts: true,
     host: '0.0.0.0',

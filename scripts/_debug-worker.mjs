@@ -1,0 +1,11 @@
+globalThis.self = { postMessage: (m) => console.log('MSG:', m.type, m.payload?.source, 'rows:', m.payload?.data?.length, 'cols:', m.payload?.columns?.length, 'err:', m.payload?.message?.slice(0,80)), onmessage: null };
+import fs from 'node:fs';
+const CSV = fs.readFileSync(new URL('../public/data.csv', import.meta.url), 'utf8');
+const dataUrl = 'data:text/csv;charset=utf-8,' + encodeURIComponent(CSV);
+await import('../src/worker.js');
+await self.onmessage({ data: { type: 'INIT', payload: { url: dataUrl, cachedText: null } } });
+const { hasRequiredColumns } = await import('../src/lib/columns.js');
+const Papa = (await import('papaparse')).default;
+const fields = Papa.parse(CSV, { header: true, skipEmptyLines: true }).meta.fields;
+console.log('hasRequiredColumns(real CSV):', hasRequiredColumns(fields));
+console.log('fields[0..5]:', JSON.stringify(fields.slice(0, 6)));

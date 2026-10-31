@@ -9,6 +9,12 @@ export const COLUMNS_KEY = 'usc.columns.v1';
 export const HINT_KEY = 'usc.hint.v1';
 export const TOUR_KEY = 'usc.tour.v3';
 export const TIME_KEY = 'usc.time.v1';
+/** Remembers the last active top-level tab (ENH-5). */
+export const TAB_KEY = 'usc.tab.v1';
+/** Per-semester-type user-confirmed teaching windows (ISSUE 1). */
+export const SEMESTER_CONFIRM_KEY = 'usc.semester.v1';
+/** Legacy bookmark keys awaiting user resolution (ISSUE 2). */
+export const LEGACY_KEY = 'usc.legacy.v1';
 
 export function hasSeenTour() {
   try {

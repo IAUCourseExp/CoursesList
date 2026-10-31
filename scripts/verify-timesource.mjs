@@ -1,6 +1,6 @@
 // Consensus-logic verification for the trusted-clock engine (lib/timeSource.js).
 // Runs the pure TimeEngine in Node with synthetic samples - no network, no DOM.
-import { TimeEngine } from '../src/lib/timeSource.js';
+import { TimeEngine, timeBadgeMeta } from '../src/lib/timeSource.js';
 
 let fail = 0;
 const ok = (name, cond, extra = '') => {
@@ -54,14 +54,33 @@ console.log('\n── 4. outlier rejection: 3 agreeing + 1 liar');
   ok('confidence high with ≥2 agreeing sources', e.getState().confidence === 'high');
 }
 
-console.log('\n── 5. exactly 2 wildly-disagreeing samples → faster RTT wins');
+console.log('\n── 5. exactly 2 wildly-disagreeing samples → keep previous offset (no side-picking)');
 {
-  const e = fresh();
   const t = 1_000_000;
-  e.addSample({ sourceId: 'fast-liar', serverEpochMs: t + 3600_000, t0: t, t1: t + 50 });
-  e.addSample({ sourceId: 'slow-honest', serverEpochMs: t + 1000, t0: t, t1: t + 4000 });
-  ok('picks the low-RTT source (even if it is the liar)', Math.abs(e.getState().offsetMs - 3600_000) <= 50,
-    `${e.getState().offsetMs}ms`);
+  // The engine never guesses between two conflicting sources: it keeps the
+  // previously agreed offset, drops confidence to low and flags 'disagreeing'
+  // (this test previously asserted "faster RTT wins", which only passed
+  // because the liar happened to be added first - BUG-30).
+  {
+    const e = fresh();
+    e.addSample({ sourceId: 'seed', serverEpochMs: t + 2000, t0: t, t1: t + 100 });
+    e.addSample({ sourceId: 'liar', serverEpochMs: t + 3600_000, t0: t, t1: t + 50 });
+    ok('keeps the previous consensus offset', Math.abs(e.getState().offsetMs - 2000) <= 50,
+      `${Math.round(e.getState().offsetMs)}ms`);
+    ok('confidence drops to low and the state is flagged disagreeing',
+      e.getState().confidence === 'low' && e.getState().sourceType === 'disagreeing');
+  }
+  {
+    const e = fresh();
+    // First sample stands alone and forms the (medium) consensus; the second
+    // one disagrees, so the engine keeps that pre-disagreement offset.
+    e.addSample({ sourceId: 'liar', serverEpochMs: t + 3600_000, t0: t, t1: t + 50 });
+    e.addSample({ sourceId: 'other', serverEpochMs: t + 1200_000, t0: t, t1: t + 50 });
+    ok('cold-start disagreement keeps the pre-disagreement offset',
+      Math.abs(e.getState().offsetMs - 3600_000) <= 50, `${Math.round(e.getState().offsetMs)}ms`);
+    ok('cold-start disagreement still flags low confidence',
+      e.getState().confidence === 'low' && e.getState().sourceType === 'disagreeing');
+  }
 }
 
 console.log('\n── 6. 2 agreeing samples → high confidence median');
@@ -163,6 +182,36 @@ console.log('\n── 11. subscribers are notified exactly on applied changes');
   unsub();
   e.addSample({ sourceId: 'c', serverEpochMs: t + 60_000, t0: t, t1: t + 100 });
   ok('no notification after unsubscribe', calls === afterFirstSource + 1);
+}
+
+console.log('\n── 12. badge metadata: truthful labels for every UI state (ISSUE 4)');
+{
+  const cases = [
+    ['network + high', 'network', 'high', 'زمان شبکه (هم‌خوان)', 'bg-emerald-500'],
+    ['network + medium', 'network', 'medium', 'زمان شبکه (تک‌منبع)', 'bg-amber-500'],
+    ['network + missing confidence falls back to single-source', 'network', undefined, 'زمان شبکه (تک‌منبع)', 'bg-amber-500'],
+    ['device fallback', 'device', 'low', 'ساعت دستگاه', 'bg-slate-400'],
+    ['persisted', 'persisted', 'low', 'زمان ذخیره‌شده', 'bg-slate-400'],
+    ['disagreeing', 'disagreeing', 'low', 'منابع در تضاد', 'bg-rose-500'],
+    ['manual pin', 'pin', 'pin', 'زمان دستی', 'bg-violet-500'],
+    ['network failure (undefined source)', undefined, undefined, 'ساعت دستگاه', 'bg-slate-400'],
+  ];
+  for (const [name, st, cf, wantLabel, wantDot] of cases) {
+    const meta = timeBadgeMeta(st, cf);
+    ok(`${name} → "${wantLabel}"`, meta.label === wantLabel, `got "${meta.label}"`);
+    ok(`${name} dot class`, meta.dot === wantDot, `got "${meta.dot}"`);
+    ok(`${name} title exists and is explanatory`,
+      typeof meta.title === 'string' && meta.title.length >= 20);
+  }
+  // The critical wording rule: no state may label network time as official.
+  for (const [st, cf] of [['network', 'high'], ['network', 'medium'], ['device', 'low'], ['persisted', 'low'], ['disagreeing', 'low']]) {
+    const meta = timeBadgeMeta(st, cf);
+    ok(`no official-time claim for ${st}/${cf}`,
+      !meta.label.includes('رسمی') && !(meta.title.includes('زمان رسمی')),
+      `"${meta.label}"`);
+  }
+  // Pin keeps its descriptive title; only the owner-controlled state may mention it.
+  ok('pin title mentions manual override', timeBadgeMeta('pin', 'pin').title.includes('دستی'));
 }
 
 console.log(`\n──────────────────────────────\nRESULT: ${fail === 0 ? 'ALL TIME-SOURCE CHECKS PASSED' : fail + ' CHECK(S) FAILED'}`);

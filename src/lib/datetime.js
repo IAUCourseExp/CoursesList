@@ -70,8 +70,22 @@ export const jalaliToGregorian = (jy, jm, jd) => {
   const r = jalCal(jy);
   if (!r) return null;
   if (!(jm >= 1 && jm <= 12) || !(jd >= 1 && jd <= 31)) return null;
-  const jdn = g2d(r.gy, 3, r.march) + (jm - 1) * 31 - div(jm, 7) * (jm - 7) + jd - 1;
-  return d2g(jdn);
+  const base = g2d(r.gy, 3, r.march);
+  const monthStart = (m) => base + (m - 1) * 31 - div(m, 7) * (m - 7);
+  // Month-length validation (BUG-27): the linear JDN formula silently rolls
+  // day 30 of a 29-day اسفند into the next month, so derive the REAL month
+  // length from the calendar structure and reject overflow instead.
+  let monthLen;
+  if (jm < 12) {
+    monthLen = monthStart(jm + 1) - monthStart(jm);
+  } else {
+    const next = jalCal(jy + 1);
+    monthLen = next
+      ? g2d(next.gy, 3, next.march) - monthStart(12)
+      : 30; // boundary of the supported era: assume the longer Esfand
+  }
+  if (jd > monthLen) return null;
+  return d2g(monthStart(jm) + jd - 1);
 };
 
 /** Jalali date → JS Date (UTC midnight, so weekday is stable). */
@@ -117,7 +131,7 @@ export const dayIndexOf = (name) => {
   // Fallback for data-entry garbage: data.csv has 2 rows like
   // "دوشنبه از تا دوشنبه از" with no real day field.
   // Longest-first scan, so "سه‌شنبه" never matches via the trailing "شنبه".
-  const ordered = ['چهارشنبه', 'پنج‌شنبه', 'سه‌شنبه', 'یک‌شنبه', 'دوشنبه', 'شنبه', 'جمعه'];
+  const ordered = ['چهارشنبه', 'پنجشنبه', 'سهشنبه', 'یکشنبه', 'دوشنبه', 'شنبه', 'جمعه'];
   for (const key of ordered) {
     if (s.includes(key)) return map[key];
   }
@@ -224,11 +238,16 @@ export const scheduleSortKey = (value) => {
 };
 
 // ── Formatting (Persian, with Gregorian cross-reference) ──────────────────────
+// The formatters receive UTC-midnight instants (from jalaliToDate) and must
+// render the SAME calendar day everywhere, so they pin timeZone:'UTC'
+// explicitly (BUG-18: without it, users west of UTC saw the previous weekday).
 const gregFmt = new Intl.DateTimeFormat('fa-IR-u-ca-gregory', {
+  timeZone: 'UTC',
   year: 'numeric', month: 'long', day: 'numeric',
 });
-const weekFmt = new Intl.DateTimeFormat('fa-IR', { weekday: 'long' });
+const weekFmt = new Intl.DateTimeFormat('fa-IR', { timeZone: 'UTC', weekday: 'long' });
 const gregShortFmt = new Intl.DateTimeFormat('fa-IR-u-ca-gregory', {
+  timeZone: 'UTC',
   year: 'numeric', month: '2-digit', day: '2-digit',
 });
 
@@ -303,14 +322,15 @@ export const relativeDayLabel = (days) => {
 
 /**
  * Lifecycle of an exam relative to "now": 'upcoming' → 'ongoing' (between the
- * از and تا times) → 'finished'. 'unknown' only when the cell carried no
- * parsable time, so callers can fall back to day-granularity labels.
+ * از and تا times) → 'finished'. 'unknown' whenever the bounds needed for a
+ * confident answer are missing - e.g. only the end time parsed and it is still
+ * in the future (BUG-27: that case used to report 'ongoing' days early).
  */
 export const examStatus = (startAt, endAt, nowMs = Date.now()) => {
-  if (startAt === null && endAt === null) return 'unknown';
-  if (startAt !== null && nowMs < startAt) return 'upcoming';
   if (endAt !== null && nowMs > endAt) return 'finished';
-  return 'ongoing';
+  if (startAt !== null && nowMs < startAt) return 'upcoming';
+  if (startAt !== null && endAt !== null) return 'ongoing';
+  return 'unknown';
 };
 
 /** Split a non-negative duration into whole days/hours/minutes/seconds. */

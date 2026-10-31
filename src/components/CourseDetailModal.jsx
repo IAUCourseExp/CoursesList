@@ -2,7 +2,7 @@
 // Displays all 22 educational attributes with clear categorization, copyable codes,
 // capacity progress bar, exam countdown, conflict indicators, and quick action buttons.
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   CloseIcon,
   HeartIcon,
@@ -25,13 +25,15 @@ import {
   fillTone,
   displayCell,
 } from '../lib/format.js';
+import { copyText } from '../lib/clipboard.js';
+import { toAsciiDigits } from '../lib/normalize.js';
 import {
   parseExam,
   parseSchedule,
   toFaDigits,
   formatJalaliWithWeekday,
 } from '../lib/datetime.js';
-import { useScrollLock } from '../lib/hooks.js';
+import { useScrollLock, useDialogFocus } from '../lib/hooks.js';
 import { ExamCountdownBadge, ExamCountdownDetails } from './ExamCountdown.jsx';
 
 export default function CourseDetailModal({
@@ -43,7 +45,9 @@ export default function CourseDetailModal({
   onNotify,
   hasConflict = false,
 }) {
+  const containerRef = useRef(null);
   useScrollLock(true);
+  useDialogFocus(containerRef);
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
 
@@ -61,24 +65,24 @@ export default function CourseDetailModal({
   const schedule = parseSchedule(course['زمانبندي تشكيل كلاس']);
   const examWhen = exam ? formatJalaliWithWeekday(exam.jy, exam.jm, exam.jd) : null;
 
-  const nUnits = (v) =>
-    isBlank(v)
-      ? null
-      : Number(String(v).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0)));
+  const nUnits = (v) => (isBlank(v) ? null : Number(toAsciiDigits(String(v))));
   const theory = nUnits(course['تعداد واحد نظري']) || 0;
   const practical = nUnits(course['تعداد واحد عملي']) || 0;
   const totalUnits = theory + practical;
 
-  const handleCopyOfferingCode = () => {
+  const handleCopyOfferingCode = async () => {
     if (!offeringCode) return;
-    navigator.clipboard.writeText(offeringCode).then(() => {
+    const ok = await copyText(offeringCode);
+    if (ok) {
       setCopiedCode(true);
       onNotify?.(`کد ارائه (${offeringCode}) در کلیپ‌بورد کپی شد.`);
       setTimeout(() => setCopiedCode(false), 2000);
-    });
+    } else {
+      onNotify?.('مرورگر اجازهٔ کپی نداد؛ کد کپی نشد.');
+    }
   };
 
-  const handleCopyFullInfo = () => {
+  const handleCopyFullInfo = async () => {
     const text = [
       `نام درس: ${title}`,
       `کد ارائه: ${offeringCode}`,
@@ -90,11 +94,14 @@ export default function CourseDetailModal({
       `دانشکده: ${course['دانشكده'] || 'نامشخص'}`,
     ].join('\n');
 
-    navigator.clipboard.writeText(text).then(() => {
+    const ok = await copyText(text);
+    if (ok) {
       setCopiedAll(true);
       onNotify?.('اطلاعات کامل درس کپی شد.');
       setTimeout(() => setCopiedAll(false), 2000);
-    });
+    } else {
+      onNotify?.('مرورگر اجازهٔ کپی نداد؛ اطلاعات کپی نشد.');
+    }
   };
 
   return (
@@ -111,7 +118,11 @@ export default function CourseDetailModal({
         className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity"
       />
 
-      <div className="relative flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-slate-50 shadow-2xl animate-sheet-up sm:max-h-[88vh] sm:rounded-3xl">
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        className="relative flex detail-max w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-slate-50 shadow-2xl animate-sheet-up outline-none sm:max-h-[88vh] sm:rounded-3xl"
+      >
         {/* Header */}
         <header className="flex items-start justify-between gap-3 border-b border-slate-200 bg-white p-4 sm:p-5">
           <div className="min-w-0 flex-1">

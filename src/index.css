@@ -7,8 +7,28 @@
    ───────────────────────────────────────────────────────────────────────────── */
 :root {
   --app-font: 'Vazirmatn', 'Segoe UI', Tahoma, system-ui, sans-serif;
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
   --tap: 44px;
+}
+
+/* Viewport-height utilities with a classic-vh fallback (BUG-33): browsers
+   without dynamic-viewport support keep using the vh value. */
+.app-shell {
+  height: 100vh;
+}
+.sheet-max {
+  max-height: 90vh;
+}
+.detail-max {
+  max-height: 92vh;
+}
+@supports (height: 100dvh) {
+  .app-shell { height: 100dvh; }
+}
+@supports (max-height: 90dvh) {
+  .sheet-max { max-height: 90dvh; }
+}
+@supports (max-height: 92dvh) {
+  .detail-max { max-height: 92dvh; }
 }
 
 :root {

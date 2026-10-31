@@ -19,7 +19,7 @@
 
 const MAX_SANE_RTT_MS = 8000;        // slower samples are too imprecise to keep
 const OUTLIER_TOLERANCE_MS = 120000; // >2min away from the median = lying source
-const DEVICE_DRIFT_WARN_MS = 90000;  // device clock this far off → warn in UI
+const DEVICE_DRIFT_WARN_MS = 300000; // 5min drift → warn (was 90s, too sensitive)
 const FREEZE_BAND_MS = 5000;         // <this correction while stable = ignore (no tick jitter)
 const MAX_SAMPLES = 20;
 const PERSIST_FRESH_MS = 14 * 24 * 3600 * 1000; // a persisted offset older than this is discarded
@@ -50,6 +50,7 @@ export class TimeEngine {
       clockDrift: false,
       pin: false,
       sourceIds: [],
+      sourceType: 'device',
     };
   }
 
@@ -97,7 +98,7 @@ export class TimeEngine {
     // Only useful as a starting prior; any live sample supersedes it (recompute
     // always prefers real samples when present).
     if (this.state.confidence === 'low') {
-      this.apply_({ offsetMs: saved.offsetMs, confidence: 'low', clockDrift: Math.abs(saved.offsetMs) > this.opts.driftWarnMs });
+      this.apply_({ offsetMs: saved.offsetMs, confidence: 'low', clockDrift: Math.abs(saved.offsetMs) > this.opts.driftWarnMs, sourceType: 'persisted' });
     }
   }
 
@@ -109,18 +110,16 @@ export class TimeEngine {
 
   recompute() {
     if (this.pinEpochMs !== null) {
-      this.apply_({ offsetMs: this.state.offsetMs, confidence: 'pin', clockDrift: false, pin: true });
+      this.apply_({ offsetMs: this.state.offsetMs, confidence: 'pin', clockDrift: false, pin: true, sourceType: 'pin' });
       return;
     }
 
     const good = this.samples.filter((s) => s.rtt <= this.opts.maxRttMs);
     if (good.length === 0) {
       if (this.state.pin) {
-        // Pin was just cleared with no live samples yet: fall back explicitly to
-        // the device clock (+ any persisted prior), leaving pin mode.
-        this.apply_({ offsetMs: this.state.offsetMs, confidence: 'low', clockDrift: false, pin: false });
+        this.apply_({ offsetMs: this.state.offsetMs, confidence: 'low', clockDrift: false, pin: false, sourceType: 'device' });
       }
-      return; // otherwise keep whatever estimate we already have
+      return;
     }
 
     let offsets = good.map((s) => s.offsetMs);
@@ -128,24 +127,34 @@ export class TimeEngine {
       const med = median(offsets);
       offsets = good.filter((s) => Math.abs(s.offsetMs - med) <= this.opts.outlierToleranceMs)
         .map((s) => s.offsetMs);
-      if (offsets.length === 0) offsets = good.map((s) => s.offsetMs); // all disagreed — keep median of raw
+      if (offsets.length === 0) offsets = good.map((s) => s.offsetMs);
     }
     const offset = median(offsets);
 
-    // With exactly 2 sources that wildly disagree, the median is meaningless —
-    // trust the faster round-trip (closer to a true reflection of the remote clock).
+    // With exactly 2 sources that wildly disagree, there is no majority.
+    // Do NOT pick the faster RTT. Instead, keep previous offset, set confidence=low,
+    // and let the UI warn the user. The previous offset (from prior consensus or persisted)
+    // is more reliable than guessing between two disagreeing sources.
     let confidence = offsets.length >= 2 ? 'high' : 'medium';
+    let sourceType = 'network';
     if (good.length === 2 && Math.abs(good[0].offsetMs - good[1].offsetMs) > this.opts.outlierToleranceMs) {
-      const fastest = [...good].sort((a, b) => a.rtt - b.rtt)[0];
-      confidence = 'medium';
-      this.apply_({ offsetMs: fastest.offsetMs, confidence, clockDrift: Math.abs(fastest.offsetMs) > this.opts.driftWarnMs, pin: false });
+      confidence = 'low';
+      sourceType = 'disagreeing';
+      // Keep the previous offset (more stable than picking one liar)
+      this.apply_({ 
+        offsetMs: this.state.offsetMs, 
+        confidence, 
+        clockDrift: Math.abs(this.state.offsetMs) > this.opts.driftWarnMs, 
+        pin: false,
+        sourceType 
+      });
       return;
     }
 
-    this.apply_({ offsetMs: offset, confidence, clockDrift: Math.abs(offset) > this.opts.driftWarnMs, pin: false });
+    this.apply_({ offsetMs: offset, confidence, clockDrift: Math.abs(offset) > this.opts.driftWarnMs, pin: false, sourceType });
   }
 
-  apply_({ offsetMs, confidence, clockDrift, pin = this.state.pin }) {
+  apply_({ offsetMs, confidence, clockDrift, pin = this.state.pin, sourceType = 'network' }) {
     const prev = this.state;
     // Jitter guard: while a stable estimate exists, ignore sub-band corrections.
     if (CONFIDENCE_RANK[confidence] <= CONFIDENCE_RANK[prev.confidence]
@@ -159,6 +168,7 @@ export class TimeEngine {
       clockDrift,
       pin,
       sourceIds: this.samples.map((s) => s.sourceId),
+      sourceType,
       updatedAt: Date.now(),
     };
     this.opts.persist?.write?.({
@@ -263,9 +273,14 @@ export function makeBrowserTimeSource({ storageKey = 'usc.time.v1', pinUrl } = {
       const json = await res.json();
       if (json?.enabled) {
         const pinned = Date.parse(json.fixedNow);
-        if (Number.isFinite(pinned)) engine.setPin(pinned);
+        if (!Number.isFinite(pinned)) {
+          console.warn('[TimeSource] Invalid fixedNow in time-override.json (not a valid ISO date):', json.fixedNow);
+          return;
+        }
+        engine.setPin(pinned);
       }
-    } catch {
+    } catch (err) {
+      console.warn('[TimeSource] Failed to load/parse time-override.json:', err);
       // No pin file / 404 / malformed - perfectly fine, manual mode stays off.
     }
   };
@@ -305,3 +320,41 @@ const isBrowser = typeof window !== 'undefined' && typeof fetch === 'function';
 export const timeSource = isBrowser
   ? makeBrowserTimeSource({ pinUrl: `${import.meta.env?.BASE_URL ?? '/'}time-override.json` })
   : null;
+
+/**
+ * Truthful badge metadata for the countdown's time-source note (ISSUE 4).
+ * Source type and confidence are kept logically separate: network
+ * synchronization is NEVER labeled as an official time, because no official
+ * authority backs these endpoints. Pure function - unit-tested in
+ * scripts/verify-timesource.mjs across every UI state.
+ *
+ * @param {string} sourceType - 'network' | 'device' | 'persisted' | 'disagreeing' | 'pin'
+ * @param {string} confidence - 'low' | 'medium' | 'high' | 'pin'
+ * @returns {{ label: string, dot: string, title: string }}
+ */
+export const timeBadgeMeta = (sourceType, confidence) => {
+  if (sourceType === 'pin') {
+    return { label: 'زمان دستی', dot: 'bg-violet-500', title: 'مدیر سایت زمان مرجع را دستی تنظیم کرده است' };
+  }
+  if (sourceType === 'disagreeing') {
+    return { label: 'منابع در تضاد', dot: 'bg-rose-500', title: 'منابع شبکه‌ای با هم هم‌خوانی ندارند؛ از آخرین تقدير معتبر استفاده شده' };
+  }
+  if (sourceType === 'persisted') {
+    return { label: 'زمان ذخیره‌شده', dot: 'bg-slate-400', title: 'بر اساس زمان ذخیره‌شده از جلسه قبل' };
+  }
+  if (sourceType === 'network') {
+    if (confidence === 'high') {
+      return {
+        label: 'زمان شبکه (هم‌خوان)',
+        dot: 'bg-emerald-500',
+        title: 'چند منبع شبکه‌ای مستقل با هم هم‌خوان‌اند؛ هیچ مرجع رسمی‌ای پشت این زمان نیست',
+      };
+    }
+    return {
+      label: 'زمان شبکه (تک‌منبع)',
+      dot: 'bg-amber-500',
+      title: 'بر اساس یک منبع شبکه‌ای؛ بهتر از ساعت دستگاه اما تک‌منبع و غیررسمی',
+    };
+  }
+  return { label: 'ساعت دستگاه', dot: 'bg-slate-400', title: 'منبع شبکه‌ای در دسترس نبود؛ بر اساس ساعت همین دستگاه' };
+};

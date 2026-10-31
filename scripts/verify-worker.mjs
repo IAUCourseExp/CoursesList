@@ -10,7 +10,10 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
-const CSV = fs.readFileSync(path.join(REPO, 'public/data.csv'), 'utf8');
+// NOTE: fetch's res.text() strips a leading UTF-8 BOM, and the worker's cache
+// round-trip is built entirely on res.text() strings - so the fixture mirrors
+// that by reading the file BOM-free. (fs.readFileSync('utf8') would keep it.)
+const CSV = fs.readFileSync(path.join(REPO, 'public/data.csv'), 'utf8').replace(/^\uFEFF/, '');
 
 const sent = [];
 globalThis.self = { postMessage: (m) => sent.push(m), onmessage: null };
@@ -236,6 +239,98 @@ await self.onmessage({ data: { type: 'INIT', payload: { url: 'http://127.0.0.1:1
 await new Promise((r) => setTimeout(r, 300));
 check('unreachable URL emits ERROR instead of crashing', !!lastOf('ERROR'),
   String(lastOf('ERROR')?.payload?.message).slice(0, 40));
+
+// ── 8. HTTP status + dataset schema validation (BUG-03) ─────────────────────
+console.log('\n[8] HTTP status + dataset schema validation (BUG-03)');
+const realFetch = globalThis.fetch;
+const withFetch = async (stub, run) => {
+  globalThis.fetch = stub;
+  try { await run(); } finally { globalThis.fetch = realFetch; }
+};
+const httpStub = (status, body, contentType = 'text/html; charset=utf-8') => async () =>
+  new Response(body, { status, headers: { 'content-type': contentType, date: new Date().toUTCString() } });
+const initAndSettle = async (payload, ms = 300) => {
+  await self.onmessage({ data: { type: 'INIT', payload } });
+  await new Promise((r) => setTimeout(r, ms));
+};
+
+// a) HTTP 404 with an HTML body
+sent.length = 0;
+await withFetch(httpStub(404, '<!DOCTYPE html><html><body>404 Not Found</body></html>'), async () => {
+  await initAndSettle({ url: 'http://x.test/data.csv', cachedText: null });
+});
+check('HTTP 404 emits ERROR and never DATA_LOADED',
+  !!lastOf('ERROR') && !lastOf('DATA_LOADED'),
+  String(lastOf('ERROR')?.payload?.message || '').slice(0, 50));
+
+// b) HTTP 500
+sent.length = 0;
+await withFetch(httpStub(500, 'server error'), async () => {
+  await initAndSettle({ url: 'http://x.test/data.csv', cachedText: null });
+});
+check('HTTP 500 emits ERROR and never DATA_LOADED',
+  !!lastOf('ERROR') && !lastOf('DATA_LOADED'),
+  String(lastOf('ERROR')?.payload?.message || '').slice(0, 50));
+
+// c) an HTML error page served with HTTP 200 (the silent-poisoning case)
+sent.length = 0;
+await withFetch(httpStub(200, '<!DOCTYPE html><html><head><title>عنوان</title></head><body>خطای سرور</body></html>'), async () => {
+  await initAndSettle({ url: 'http://x.test/data.csv', cachedText: null });
+});
+check('HTML with HTTP 200 is rejected by the schema gate (ERROR, no DATA_LOADED)',
+  !!lastOf('ERROR') && !lastOf('DATA_LOADED'));
+
+// d) empty body with HTTP 200
+sent.length = 0;
+await withFetch(httpStub(200, ''), async () => {
+  await initAndSettle({ url: 'http://x.test/data.csv', cachedText: null });
+});
+check('empty response is rejected', !!lastOf('ERROR') && !lastOf('DATA_LOADED'));
+
+// e) CSV without the required Persian headers
+sent.length = 0;
+await withFetch(httpStub(200, 'a,b,c\n1,2,3\n', 'text/csv'), async () => {
+  await initAndSettle({ url: 'http://x.test/data.csv', cachedText: null });
+});
+check('CSV with missing required headers is rejected', !!lastOf('ERROR') && !lastOf('DATA_LOADED'));
+
+// f) a small but VALID dataset passes the schema gate (no hardcoded row floor)
+const csvLines = CSV.split(/\r?\n/);
+const smallCsv = [csvLines[0], ...csvLines.slice(1, 4)].filter(Boolean).join('\r\n');
+sent.length = 0;
+await withFetch(httpStub(200, smallCsv, 'text/csv'), async () => {
+  await initAndSettle({ url: 'http://x.test/data.csv', cachedText: null });
+});
+const smallLoaded = lastOf('DATA_LOADED');
+check('small valid dataset is accepted (schema-first, no row-count gate)',
+  !!smallLoaded && !lastOf('ERROR') && smallLoaded.payload.data.length === 3,
+  `${smallLoaded?.payload?.data?.length} rows`);
+
+// g) a poisoned cache is skipped; healthy network data still loads
+sent.length = 0;
+await withFetch(httpStub(200, CSV, 'text/csv'), async () => {
+  await initAndSettle({ url: 'http://x.test/data.csv', cachedText: '<html>poisoned cache</html>' });
+});
+check('invalid cached text is skipped, network data loads',
+  lastOf('DATA_LOADED')?.payload?.source === 'network'
+  && !sent.some((m) => m.type === 'DATA_LOADED' && m.payload.source === 'cache'));
+
+// h) a valid cache still paints first, and a network failure keeps offline mode
+sent.length = 0;
+await withFetch(async () => { throw new Error('network down'); }, async () => {
+  await initAndSettle({ url: 'http://x.test/data.csv', cachedText: CSV });
+});
+check('valid cache paints first; network failure emits ERROR after it',
+  sent.some((m) => m.type === 'DATA_LOADED' && m.payload.source === 'cache') && !!lastOf('ERROR'));
+
+// i) healthy cache + unchanged network → fresh status, no duplicate data post
+sent.length = 0;
+await withFetch(httpStub(200, CSV, 'text/csv'), async () => {
+  await initAndSettle({ url: 'http://x.test/data.csv', cachedText: CSV });
+});
+check('unchanged network reports fresh and posts no second DATA_LOADED',
+  lastOf('STATUS')?.payload?.fresh === true
+  && !sent.some((m) => m.type === 'DATA_LOADED' && m.payload.changed === true));
 
 console.log(`\n──────────────────────────────\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

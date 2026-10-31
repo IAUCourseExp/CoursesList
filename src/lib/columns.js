@@ -27,6 +27,39 @@ const byCanon = (map) => {
 export const PHANTOM_COLUMN = '';
 export const isPhantom = (col) => !col || col === PHANTOM_COLUMN;
 
+/**
+ * Columns the application's logic hard-depends on (identity, conflicts,
+ * units, capacity). A network response whose parsed header set is missing any
+ * of these is not a usable dataset - most commonly an HTML error page that
+ * Papa.parse happily "parsed" - and must never reach the UI or the cache
+ * (BUG-03). Spellings match the raw CSV headers exactly; matching them
+ * through `canonical()` keeps the guard working if the file's spelling
+ * variants ever shift.
+ */
+export const REQUIRED_COLUMNS = [
+  'كد ارائه كلاس درس',
+  'نام درس',
+  'استاد',
+  'زمانبندي تشكيل كلاس',
+  'زمان امتحان',
+  'تعداد واحد نظري',
+  'تعداد واحد عملي',
+  'حداكثر ظرفيت',
+  'تعداد ثبت نامي تاكنون',
+  'مكان برگزاري',
+];
+
+const REQUIRED_CANON = canonSet(REQUIRED_COLUMNS);
+
+/** True when a parsed header list covers every required column. */
+export const hasRequiredColumns = (fields) => {
+  if (!Array.isArray(fields)) return false;
+  for (const required of REQUIRED_CANON) {
+    if (!fields.some((f) => canonical(f) === required)) return false;
+  }
+  return true;
+};
+
 /** Short Persian labels, retyped with proper ی/ک (the raw headers use Arabic forms). */
 const SHORT_LABELS = {
   'كد درس': 'کد درس',

@@ -1,6 +1,7 @@
 import Papa from 'papaparse';
 import { scheduleSortKey, parseExam } from './lib/datetime.js';
-import { PHANTOM_COLUMN } from './lib/columns.js';
+import { PHANTOM_COLUMN, hasRequiredColumns } from './lib/columns.js';
+import { normalizeFarsi, normalizeDisplay } from './lib/normalize.js';
 
 let masterData = [];
 let columns = [];
@@ -9,29 +10,13 @@ let facetCache = {};
 const SCHEDULE_COL = 'زمانبندي تشكيل كلاس';
 const EXAM_COL = 'زمان امتحان';
 
+// Track the latest data version to reject stale QUERY responses
+let currentDataVersion = 0;
+
 // Persian users type ۱۴۰۵, the CSV stores 1405 - unify digits in BOTH directions so
-// either spelling searches, filters and highlights identically.
-const toAsciiDigits = (s) =>
-  String(s)
-    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
-    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660));
-
-const normalizeFarsi = (text) => {
-  if (text === null || text === undefined) return '';
-  return toAsciiDigits(String(text))
-    .replace(/\u064A/g, '\u06CC')
-    .replace(/\u0643/g, '\u06A9')
-    .toLowerCase()
-    .trim();
-};
-
-const normalizeDisplay = (text) => {
-  if (text === null || text === undefined) return '';
-  return toAsciiDigits(String(text))
-    .replace(/\u064A/g, '\u06CC')
-    .replace(/\u0643/g, '\u06A9')
-    .trim();
-};
+// either spelling searches, filters and highlights identically. The transforms
+// live in lib/normalize.js (BUG-08) so the UI highlighter always agrees with
+// what the worker searched.
 
 const normCell = (value) => {
   const s = value === null || value === undefined ? '' : String(value).trim();
@@ -52,15 +37,35 @@ const parseCsv = (csvString) =>
     });
   });
 
+/**
+ * Parse a CSV string and validate that it is a real course dataset (BUG-03).
+ * An HTML error page parses without Papa errors but can never contain the
+ * application's required columns, so a schema check is the gate: invalid
+ * input throws instead of reaching the UI or the cache.
+ */
+const parseValidDataset = async (csvString, sourceLabel) => {
+  const results = await parseCsv(csvString);
+  const fields = results.meta?.fields || [];
+  if (!hasRequiredColumns(fields)) {
+    throw new Error(`${sourceLabel}: پاسخ شبیه فایل دروس نبود (ستون‌های الزامی یافت نشد).`);
+  }
+  if (!results.data || results.data.length === 0) {
+    throw new Error(`${sourceLabel}: فایل دروس خالی بود.`);
+  }
+  return results;
+};
+
 const replaceData = (parsed) => {
   masterData = parsed.data || [];
-  // Drop the empty-named column created by the trailing comma on every line of data.csv;
-  // it is blank in all 2565 rows and only ever added a dead column + dead filter.
+  // Defensive: drop the empty-named phantom column if the source file ever
+  // regresses to a trailing comma (the current file has none - verified - so
+  // this is a no-op today, but it keeps the column set and filters clean).
   columns = (parsed.meta?.fields || []).filter((c) => c && c !== PHANTOM_COLUMN);
   if (parsed.meta?.fields?.includes(PHANTOM_COLUMN)) {
     for (const row of masterData) delete row[PHANTOM_COLUMN];
   }
   facetCache = {};
+  currentDataVersion += 1;
 };
 
 /** Blanks are pushed to the end in BOTH directions - 719 rows have no schedule and
@@ -85,7 +90,8 @@ const compareCells = (column, a, b) => {
     const eb = parseExam(b);
     if (ea && eb) {
       if (ea.sortKey !== eb.sortKey) return ea.sortKey - eb.sortKey;
-      return (ea.from || '').localeCompare(eb.from || '');
+      // Zero-pad so single-digit hours sort numerically ('8:00' vs '10:00').
+      return (ea.from || '').padStart(5, '0').localeCompare((eb.from || '').padStart(5, '0'));
     }
   }
 
@@ -163,6 +169,11 @@ self.onmessage = async (e) => {
         const t0 = Date.now();
         const res = await fetch(url, { cache: 'no-cache' });
         const dateHeader = res.headers.get('date');
+        // Never treat an HTTP error page as course data (BUG-03): let the
+        // caller's try/catch turn this into the offline/cache fallback path.
+        if (!res.ok) {
+          throw new Error(`درخواست فایل دروس ناموفق بود (HTTP ${res.status}).`);
+        }
         const text = await res.text();
         const t1 = Date.now();
         // The response Date header doubles as a free network-clock sample for
@@ -170,18 +181,28 @@ self.onmessage = async (e) => {
         return { text, timeSample: dateHeader ? { dateHeader, t0, t1 } : null };
       };
 
+      let cacheUsable = false;
       if (cachedText) {
-        replaceData(await parseCsv(cachedText));
+        // Only a cache that still validates against the schema may paint first;
+        // a stale or corrupt cache falls through to the network fetch.
+        try {
+          replaceData(await parseValidDataset(cachedText, 'حافظهٔ محلی'));
+          cacheUsable = true;
+        } catch {
+          cacheUsable = false;
+        }
+      }
+      if (cacheUsable) {
         self.postMessage({
           type: 'DATA_LOADED',
-          payload: { source: 'cache', changed: false, data: masterData, columns },
+          payload: { source: 'cache', changed: false, data: masterData, columns, dataVersion: currentDataVersion },
         });
 
         const { text, timeSample } = await fetchCsv();
         if (text === cachedText) {
           self.postMessage({ type: 'STATUS', payload: { fresh: true, timeSample } });
         } else {
-          replaceData(await parseCsv(text));
+          replaceData(await parseValidDataset(text, 'فایل تازه'));
           self.postMessage({
             type: 'DATA_LOADED',
             payload: {
@@ -191,12 +212,13 @@ self.onmessage = async (e) => {
               columns,
               csvText: text,
               timeSample,
+              dataVersion: currentDataVersion,
             },
           });
         }
       } else {
         const { text, timeSample } = await fetchCsv();
-        replaceData(await parseCsv(text));
+        replaceData(await parseValidDataset(text, 'فایل تازه'));
         self.postMessage({
           type: 'DATA_LOADED',
           payload: {
@@ -206,12 +228,27 @@ self.onmessage = async (e) => {
             columns,
             csvText: text,
             timeSample,
+            dataVersion: currentDataVersion,
           },
         });
       }
     }
 
     if (type === 'QUERY') {
+      const requestId = payload?.requestId;
+      const queryDataVersion = payload?.dataVersion;
+      
+      // Reject stale queries against old data version
+      if (queryDataVersion !== undefined && queryDataVersion !== currentDataVersion) {
+        if (requestId !== undefined) {
+          self.postMessage({ 
+            type: 'QUERY_RESULTS', 
+            payload: { rows: [], stale: true, requestId } 
+          });
+        }
+        return;
+      }
+      
       const rows = applyQuery(payload || {});
       const displayRows = rows.map((row) => {
         const newRow = {};
@@ -220,7 +257,9 @@ self.onmessage = async (e) => {
         }
         return newRow;
       });
-      self.postMessage({ type: 'QUERY_RESULTS', payload: { rows: displayRows } });
+      const response = { type: 'QUERY_RESULTS', payload: { rows: displayRows, dataVersion: currentDataVersion } };
+      if (requestId !== undefined) response.payload.requestId = requestId;
+      self.postMessage(response);
     }
 
     if (type === 'FACETS') {
@@ -228,7 +267,7 @@ self.onmessage = async (e) => {
       if (columns.includes(column)) {
         self.postMessage({
           type: 'FACETS_RESULT',
-          payload: { column, values: buildFacets(column) },
+          payload: { column, values: buildFacets(column), dataVersion: currentDataVersion },
         });
       }
     }

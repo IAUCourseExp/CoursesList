@@ -19,11 +19,12 @@ import {
   parseExam,
   parseSchedule,
   toFaDigits,
-  formatJalaliWithWeekday,
   daysUntil,
   relativeDayLabel,
 } from '../lib/datetime.js';
 import { useTehranDay } from '../lib/hooks.js';
+import { copyText } from '../lib/clipboard.js';
+import { toAsciiDigits } from '../lib/normalize.js';
 import { CapacityBar } from './Bits.jsx';
 
 /** One labelled fact in the 2-column grid. */
@@ -42,6 +43,7 @@ const MobileCard = React.memo(function MobileCard({
   row,
   index,
   isBookmarked,
+  isConflicted = false,
   onToggleBookmark,
   onCopy,
   onCompare,
@@ -51,7 +53,7 @@ const MobileCard = React.memo(function MobileCard({
   availableColumns,
 }) {
   const [open, setOpen] = useState(false);
-  const [copiedCode, setCopiedCode] = useState(false);
+  const [copyState, setCopyState] = useState('idle'); // 'idle' | 'ok' | 'fail'
 
   const capacity = capacityInfo(row);
   const tone = fillTone(capacity.pct);
@@ -61,7 +63,6 @@ const MobileCard = React.memo(function MobileCard({
   // Tehran-day change by the shared ticker, never per-second (one card of many).
   const dayKey = useTehranDay();
   const examDays = exam ? daysUntil(exam.date, dayKey * 86400000) : null;
-  const examWhen = exam ? formatJalaliWithWeekday(exam.jy, exam.jm, exam.jd) : null;
   const courseName = isBlank(row['نام درس']) ? 'درس بدون نام' : row['نام درس'];
   const professor = isBlank(row['استاد']) ? null : row['استاد'];
   const type = isBlank(row['نوع درس']) ? null : row['نوع درس'];
@@ -69,34 +70,41 @@ const MobileCard = React.memo(function MobileCard({
   const degree = isBlank(row['مقطع ارائه درس']) ? null : row['مقطع ارائه درس'];
 
   const nUnits = (v) =>
-    isBlank(v)
-      ? null
-      : Number(String(v).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0)));
+    isBlank(v) ? null : Number(toAsciiDigits(String(v)));
   const theory = nUnits(row['تعداد واحد نظري']);
   const practical = nUnits(row['تعداد واحد عملي']);
   const unitsTotal = (theory || 0) + (practical || 0);
 
-  const facts = pickColumns(availableColumns, CARD_FACT_COLUMNS).filter(
-    (c) => c === 'حداكثر ظرفيت' || !isBlank(row[c])
-  );
   const extras = pickColumns(availableColumns, CARD_EXTRA_COLUMNS).filter(
     (c) => !isBlank(row[c])
   );
 
-  const handleCopyCode = (e) => {
+  const handleCopyCode = async (e) => {
     e.stopPropagation();
     if (!offeringCode) return;
-    navigator.clipboard.writeText(offeringCode).then(() => {
-      setCopiedCode(true);
-      setTimeout(() => setCopiedCode(false), 2000);
-    });
+    const ok = await copyText(offeringCode);
+    if (ok) {
+      setCopyState('ok');
+      setTimeout(() => setCopyState('idle'), 2000);
+    } else {
+      setCopyState('fail');
+      setTimeout(() => setCopyState('idle'), 2500);
+    }
   };
 
   return (
     <article
       dir="rtl"
-      className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-xs transition-shadow hover:shadow-md"
+      className="relative overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-xs transition-shadow hover:shadow-md"
     >
+      {/* ENH-2: same conflict marker as the desktop rail, no layout shift */}
+      {isConflicted && (
+        <span
+          aria-label="این درس با برنامهٔ انتخابی شما تداخل زمانی دارد"
+          title="این درس با برنامهٔ انتخابی شما تداخل زمانی دارد"
+          className="absolute end-2 top-2 z-10 size-2 rounded-full bg-rose-500"
+        />
+      )}
       {/* Top Banner: Offering Code, Degree & Quick Actions */}
       <div className="flex items-center justify-between gap-1.5 border-b border-slate-100 bg-slate-50/70 px-3 py-2">
         <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
@@ -112,8 +120,10 @@ const MobileCard = React.memo(function MobileCard({
               className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-extrabold text-slate-700 transition-colors hover:border-blue-300 hover:text-blue-700"
             >
               <span>کد: {toFaDigits(offeringCode)}</span>
-              {copiedCode ? (
+              {copyState === 'ok' ? (
                 <CheckIcon className="size-3 text-emerald-600" />
+              ) : copyState === 'fail' ? (
+                <span className="text-[9px] font-black text-rose-500">کپی نشد</span>
               ) : (
                 <CopyIcon className="size-3 text-slate-400" />
               )}

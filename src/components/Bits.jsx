@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react';
 import { CloseIcon, SearchIcon } from './icons.jsx';
 
 /* ── Toast ───────────────────────────────────────────────────────────────────── */
-export function Toast({ message, onDone, duration = 3200 }) {
+/** `action` optionally renders an inline button (e.g. an undo) inside the toast;
+ *  callers pass a longer `duration` when they need time to click it. */
+export function Toast({ message, onDone, duration = 3200, action }) {
   useEffect(() => {
     if (!message) return undefined;
     const t = setTimeout(() => onDone?.(), duration);
@@ -20,6 +22,15 @@ export function Toast({ message, onDone, duration = 3200 }) {
     >
       <span className="grid size-6 shrink-0 place-items-center rounded-full bg-emerald-500/20 text-xs text-emerald-300">✓</span>
       <span className="text-[13px] font-medium leading-relaxed">{message}</span>
+      {action && (
+        <button
+          type="button"
+          onClick={action.onClick}
+          className="min-h-8 shrink-0 rounded-lg bg-white/15 px-2.5 text-[12px] font-black text-white transition-colors hover:bg-white/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+        >
+          {action.label}
+        </button>
+      )}
     </div>
   );
 }

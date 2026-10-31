@@ -14,6 +14,7 @@ const DesktopRow = React.memo(function DesktopRow({
   starWidth,
   rowHeight,
   isBookmarked,
+  isConflicted = false,
   onToggleBookmark,
   onCopy,
   onCompare,
@@ -35,6 +36,15 @@ const DesktopRow = React.memo(function DesktopRow({
       role="row"
       onDoubleClick={() => onOpenDetail?.(row)}
     >
+      {/* ENH-2: bookmarked rows tangled in a clash carry a small marker that
+          does not shift the layout (it floats over the row edge). */}
+      {isConflicted && (
+        <span
+          aria-label="این درس با برنامهٔ انتخابی شما تداخل زمانی دارد"
+          title="این درس با برنامهٔ انتخابی شما تداخل زمانی دارد"
+          className="absolute end-1 top-1 z-10 size-1.5 rounded-full bg-rose-500 print:hidden"
+        />
+      )}
       {/* Action rail: high-contrast, intuitive bookmark + compare + copy */}
       <div
         className="flex shrink-0 items-center justify-center gap-1 border-e border-slate-100 bg-inherit px-1.5"

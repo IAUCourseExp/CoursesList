@@ -1,8 +1,24 @@
 // Conflict detection engine and schedule utilities.
 // Pure functions with no DOM dependencies, safe for UI and Web Worker.
 
-import { parseSchedule, parseExam, jalaliToGregorian, FA_DAYS } from './datetime.js';
+import { parseSchedule, parseExam, FA_DAYS } from './datetime.js';
 import { rowKeyOf } from './format.js';
+import { toAsciiDigits } from './normalize.js';
+
+/**
+ * Injective, deterministic slug for ICS UIDs (ISSUE 3): base64url (RFC 4648
+ * §5) of the FULL UTF-8 canonical identity. Unlike a fixed-width digest this
+ * cannot collide - distinct identities always produce distinct slugs - and it
+ * is stable across exports and cart reordering because it derives only from
+ * the offering identity. The alphabet (A-Z a-z 0-9 - _) is safe inside an
+ * RFC 5545 TEXT UID; long values are handled by the folder.
+ */
+export const uidSlug = (identity) => {
+  const bytes = new TextEncoder().encode(String(identity));
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
 
 /**
  * Check if two time ranges (in minutes from midnight) overlap.
@@ -44,6 +60,9 @@ export const detectConflicts = (courses = []) => {
     for (let j = i + 1; j < n; j++) {
       const a = parsed[i];
       const b = parsed[j];
+      // Identical tuples are the same offering showing up twice - comparing
+      // it with itself would report a bogus self-conflict (BUG-02).
+      if (a.key && a.key === b.key) continue;
 
       // Schedule conflict check across all slots of course A and course B
       const slotsA = a.sched?.slots?.length ? a.sched.slots : (a.sched ? [a.sched] : []);
@@ -147,19 +166,25 @@ export const calculateUnits = (courses = []) => {
   let practicalUnits = 0;
 
   for (const c of courses) {
-    const t = Number(String(c['تعداد واحد نظري'] || '0').replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0)));
-    const p = Number(String(c['تعداد واحد عملي'] || '0').replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0)));
+    // Both Persian (۰-۹) and Arabic-Indic (٠-٩) digit variants (BUG-27).
+    const t = Number(toAsciiDigits(String(c['تعداد واحد نظري'] || '0')));
+    const p = Number(toAsciiDigits(String(c['تعداد واحد عملي'] || '0')));
     if (Number.isFinite(t) && t > 0) theoryUnits += t;
     if (Number.isFinite(p) && p > 0) practicalUnits += p;
   }
 
   const totalUnits = theoryUnits + practicalUnits;
-  let status = 'normal'; // 'low', 'normal', 'honor', 'overload'
+  let status = 'normal'; // 'empty', 'low', 'normal', 'honor', 'overload'
   let statusMessage = 'در محدوده مجاز انتخاب واحد';
 
-  if (totalUnits === 0) {
+  // "Empty" means the cart is actually empty (BUG-19); courses selected with
+  // zero/missing unit values are a different, honest situation.
+  if (courses.length === 0) {
     status = 'empty';
     statusMessage = 'هنوز درسی انتخاب نشده است';
+  } else if (totalUnits === 0) {
+    status = 'low';
+    statusMessage = 'واحد دروس انتخاب‌شده در فایل اعلام نشده یا صفر است (حداقل مجاز ۱۲ واحد)';
   } else if (totalUnits < 12) {
     status = 'low';
     statusMessage = 'کمتر از حداقل مجاز ترم (حداقل ۱۲ واحد)';
@@ -185,8 +210,17 @@ export const calculateUnits = (courses = []) => {
 
 /**
  * Generate standard RFC 5545 iCalendar content (.ics) for course schedules and final exams.
+ *
+ * @param {Array} courses - selected course rows
+ * @param {{ semester?: {semesterStart: Date, teachingEnd: Date}|null,
+ *           nowMs?: number }} options
+ *   semester - the owner-verified teaching window (public/semester.json).
+ *     Without it, weekly class events are OMITTED and the calendar carries
+ *     only the (exact) exam events - the old earliest-exam guess anchored
+ *     every weekly class inside exam season and was removed (BUG-04).
+ *   nowMs    - trusted-clock instant used for DTSTAMP.
  */
-export const generateIcsCalendar = (courses = []) => {
+export const generateIcsCalendar = (courses = [], { semester = null, nowMs = Date.now() } = {}) => {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -200,103 +234,139 @@ export const generateIcsCalendar = (courses = []) => {
   // Day mapping from dayIndex (0 = شنبه ... 6 = جمعه) to iCal BYDAY
   const ICAL_DAYS = ['SA', 'SU', 'MO', 'TU', 'WE', 'TH', 'FR'];
 
-  // Semester start reference date: Fall 1405 starts around 2026-09-23 (1405/07/01)
-  const semesterStart = new Date(Date.UTC(2026, 8, 23, 0, 0, 0));
-  const semesterEnd = new Date(Date.UTC(2027, 0, 15, 23, 59, 59));
+  /** RFC 5545 §3.2.11 TEXT escaping for SAFE-CHAR sequences. */
+  const escapeText = (value) =>
+    String(value ?? '')
+      .replace(/\\/g, '\\\\')
+      .replace(/;/g, '\\;')
+      .replace(/,/g, '\\,')
+      .replace(/\r?\n/g, '\\n');
+
+  const encoder = new TextEncoder();
+  /** RFC 5545 §3.1: fold content lines at 75 OCTETS (never characters), and
+   *  never split a multi-byte UTF-8 character. Continuations open with one space. */
+  const foldLine = (line) => {
+    if (encoder.encode(line).length <= 75) return [line];
+    const parts = [];
+    let cur = '';
+    let curOctets = 0;
+    let limit = 75;
+    for (const ch of line) {
+      const octets = encoder.encode(ch).length;
+      if (curOctets + octets > limit) {
+        parts.push(cur);
+        cur = '';
+        curOctets = 0;
+        limit = 74;
+      }
+      cur += ch;
+      curOctets += octets;
+    }
+    if (cur) parts.push(cur);
+    return parts.map((p, i) => (i === 0 ? p : ` ${p}`));
+  };
+
+  const push = (line) => lines.push(...foldLine(line));
 
   const pad = (n) => String(n).padStart(2, '0');
   const formatUtcDate = (d) =>
     `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}00Z`;
 
-  const nowStamp = formatUtcDate(new Date());
+  const nowStamp = formatUtcDate(new Date(nowMs));
 
-  courses.forEach((c, idx) => {
+  const semesterStart = semester?.semesterStart instanceof Date ? semester.semesterStart : null;
+  const teachingEnd = semester?.teachingEnd instanceof Date ? semester.teachingEnd : null;
+  const hasTeachingWindow = !!(semesterStart && teachingEnd && teachingEnd > semesterStart);
+
+  courses.forEach((c) => {
     const title = c['نام درس'] || 'درس دانشگاهی';
     const instructor = c['استاد'] || '';
     const room = c['مكان برگزاري'] || '';
     const code = c['كد ارائه كلاس درس'] || c['كد درس'] || '';
+    const uidBase = uidSlug(rowKeyOf(c));
 
-    // Weekly class schedule (generate events for all sections/slots)
+    // Weekly class schedule (all slots) - only with a verified teaching window
     const sched = parseSchedule(c['زمانبندي تشكيل كلاس']);
     const slots = sched?.slots?.length ? sched.slots : (sched ? [sched] : []);
-    slots.forEach((s, slotIdx) => {
-      if (s && s.dayIndex !== null && s.from && s.to) {
-        const byDay = ICAL_DAYS[s.dayIndex];
-        const [fromH, fromM] = s.from.split(':').map(Number);
-        const [toH, toM] = s.to.split(':').map(Number);
+    if (hasTeachingWindow) {
+      slots.forEach((s, slotIdx) => {
+        if (s && s.dayIndex !== null && s.from && s.to) {
+          const byDay = ICAL_DAYS[s.dayIndex];
+          const [fromH, fromM] = s.from.split(':').map(Number);
+          const [toH, toM] = s.to.split(':').map(Number);
 
-        // Find first occurrence date matching dayIndex on or after semesterStart
-        const jsDayTarget = (s.dayIndex + 6) % 7;
-        const firstClass = new Date(semesterStart);
-        const currentJsDay = firstClass.getUTCDay();
-        const diffDays = (jsDayTarget - currentJsDay + 7) % 7;
-        firstClass.setUTCDate(firstClass.getUTCDate() + diffDays);
-        firstClass.setUTCHours(fromH - 3, fromM - 30); // Approximate Iran Time (UTC+3:30)
+          // First occurrence of this weekday on or after the semester start
+          const firstClass = findFirstWeekdayOnOrAfter(s.dayIndex, semesterStart);
+          firstClass.setUTCHours(fromH - 3, fromM - 30); // fixed Iran time (UTC+3:30)
 
-        const firstEnd = new Date(firstClass);
-        firstEnd.setUTCHours(toH - 3, toM - 30);
+          const firstEnd = new Date(firstClass);
+          firstEnd.setUTCHours(toH - 3, toM - 30);
 
-        const untilStr = `${semesterEnd.getUTCFullYear()}${pad(semesterEnd.getUTCMonth() + 1)}${pad(semesterEnd.getUTCDate())}T235959Z`;
+          if (firstClass > teachingEnd) return; // would produce zero occurrences
 
-        lines.push('BEGIN:VEVENT');
-        lines.push(`UID:course-class-${code || idx}-${idx}-${slotIdx}@iaushiraz.ir`);
-        lines.push(`DTSTAMP:${nowStamp}`);
-        lines.push(`DTSTART:${formatUtcDate(firstClass)}`);
-        lines.push(`DTEND:${formatUtcDate(firstEnd)}`);
-        lines.push(`RRULE:FREQ=WEEKLY;BYDAY=${byDay};UNTIL=${untilStr}`);
-        lines.push(`SUMMARY:${title}${instructor ? ` - استاد ${instructor}` : ''}`);
-        lines.push(`LOCATION:${room || 'دانشگاه آزاد واحد شیراز'}`);
-        lines.push(`DESCRIPTION:کد ارائه: ${code}\\nاستاد: ${instructor}\\nمکان: ${room}`);
-        lines.push('BEGIN:VALARM');
-        lines.push('ACTION:DISPLAY');
-        lines.push('DESCRIPTION:یادآوری شروع کلاس');
-        lines.push('TRIGGER:-PT15M');
-        lines.push('END:VALARM');
-        lines.push('END:VEVENT');
-      }
-    });
+          const untilStr = `${teachingEnd.getUTCFullYear()}${pad(teachingEnd.getUTCMonth() + 1)}${pad(teachingEnd.getUTCDate())}T235959Z`;
 
-    // Final exam
+          push('BEGIN:VEVENT');
+          push(`UID:course-class-${uidBase}-${slotIdx}@iaushiraz.ir`);
+          push(`DTSTAMP:${nowStamp}`);
+          push(`DTSTART:${formatUtcDate(firstClass)}`);
+          push(`DTEND:${formatUtcDate(firstEnd)}`);
+          push(`RRULE:FREQ=WEEKLY;BYDAY=${byDay};UNTIL=${untilStr}`);
+          push(`SUMMARY:${escapeText(title)}${instructor ? ` - استاد ${escapeText(instructor)}` : ''}`);
+          push(`LOCATION:${escapeText(room || 'دانشگاه آزاد واحد شیراز')}`);
+          push(`DESCRIPTION:کد ارائه: ${escapeText(code)}\\nاستاد: ${escapeText(instructor)}\\nمکان: ${escapeText(room)}`);
+          push('BEGIN:VALARM');
+          push('ACTION:DISPLAY');
+          push('DESCRIPTION:یادآوری شروع کلاس');
+          push('TRIGGER:-PT15M');
+          push('END:VALARM');
+          push('END:VEVENT');
+        }
+      });
+    }
+
+    // Final exam - use pre-computed UTC instants from parseExam (BUG-016 fix)
     const exam = parseExam(c['زمان امتحان']);
     if (exam && exam.date) {
-      const g = jalaliToGregorian(exam.jy, exam.jm, exam.jd);
-      if (g) {
-        const examStart = new Date(Date.UTC(g.gy, g.gm - 1, g.gd));
-        const examEnd = new Date(Date.UTC(g.gy, g.gm - 1, g.gd));
+      const examStart = exam.startAt !== null ? new Date(exam.startAt) : null;
+      const examEnd = exam.endAt !== null ? new Date(exam.endAt) : null;
 
-        if (exam.from && exam.to) {
-          const [fH, fM] = exam.from.split(':').map(Number);
-          const [tH, tM] = exam.to.split(':').map(Number);
-          examStart.setUTCHours(fH - 3, fM - 30);
-          examEnd.setUTCHours(tH - 3, tM - 30);
-        } else {
-          examStart.setUTCHours(4, 30); // 08:00 IRST default
-          examEnd.setUTCHours(6, 30); // 10:00 IRST default
-        }
-
-        lines.push('BEGIN:VEVENT');
-        lines.push(`UID:course-exam-${code || idx}-${idx}@iaushiraz.ir`);
-        lines.push(`DTSTAMP:${nowStamp}`);
-        lines.push(`DTSTART:${formatUtcDate(examStart)}`);
-        lines.push(`DTEND:${formatUtcDate(examEnd)}`);
-        lines.push(`SUMMARY:امتحان نهایی: ${title}`);
-        lines.push(`LOCATION:${room || 'دانشگاه آزاد واحد شیراز'}`);
-        lines.push(`DESCRIPTION:امتحان پایان ترم درس ${title}\\nاستاد: ${instructor}\\nکد ارائه: ${code}`);
-        lines.push('BEGIN:VALARM');
-        lines.push('ACTION:DISPLAY');
-        lines.push('DESCRIPTION:یادآوری امتحان فردا');
-        lines.push('TRIGGER:-P1D');
-        lines.push('END:VALARM');
-        lines.push('BEGIN:VALARM');
-        lines.push('ACTION:DISPLAY');
-        lines.push('DESCRIPTION:یادآوری امتحان تا ۲ ساعت دیگر');
-        lines.push('TRIGGER:-PT2H');
-        lines.push('END:VALARM');
-        lines.push('END:VEVENT');
+      if (examStart && examEnd) {
+        push('BEGIN:VEVENT');
+        push(`UID:course-exam-${uidBase}@iaushiraz.ir`);
+        push(`DTSTAMP:${nowStamp}`);
+        push(`DTSTART:${formatUtcDate(examStart)}`);
+        push(`DTEND:${formatUtcDate(examEnd)}`);
+        push(`SUMMARY:امتحان نهایی: ${escapeText(title)}`);
+        push(`LOCATION:${escapeText(room || 'دانشگاه آزاد واحد شیراز')}`);
+        push(`DESCRIPTION:امتحان پایان ترم درس ${escapeText(title)}\\nاستاد: ${escapeText(instructor)}\\nکد ارائه: ${escapeText(code)}`);
+        push('BEGIN:VALARM');
+        push('ACTION:DISPLAY');
+        push('DESCRIPTION:یادآوری امتحان فردا');
+        push('TRIGGER:-P1D');
+        push('END:VALARM');
+        push('BEGIN:VALARM');
+        push('ACTION:DISPLAY');
+        push('DESCRIPTION:یادآوری امتحان تا ۲ ساعت دیگر');
+        push('TRIGGER:-PT2H');
+        push('END:VALARM');
+        push('END:VEVENT');
       }
     }
   });
 
-  lines.push('END:VCALENDAR');
+  push('END:VCALENDAR');
   return lines.join('\r\n');
 };
+
+/**
+ * Find the first occurrence of a given weekday (0=شنبه...6=جمعه) on or after the reference date.
+ */
+function findFirstWeekdayOnOrAfter(dayIndex, referenceDate) {
+  const jsDayTarget = (dayIndex + 6) % 7;
+  const firstClass = new Date(referenceDate);
+  const currentJsDay = firstClass.getUTCDay();
+  const diffDays = (jsDayTarget - currentJsDay + 7) % 7;
+  firstClass.setUTCDate(firstClass.getUTCDate() + diffDays);
+  return firstClass;
+}

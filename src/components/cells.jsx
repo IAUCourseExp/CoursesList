@@ -2,6 +2,7 @@
 // Every item is center-aligned for optimal readability and rapid scanning.
 
 import { isBlank, faNum } from '../lib/format.js';
+import { toAsciiDigits } from '../lib/normalize.js';
 import { CODE_COLUMNS } from '../lib/columns.js';
 import { parseSchedule, parseExam, toFaDigits, formatJalaliWithWeekday, FA_DAYS } from '../lib/datetime.js';
 
@@ -95,7 +96,8 @@ export function CodeCell({ value, className = '' }) {
 export function CapacityCell({ row }) {
   const raw = row['حداكثر ظرفيت'];
   if (isBlank(raw)) return <span className="text-slate-300">-</span>;
-  const n = Number(String(raw).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0)));
+  // Both Persian and Arabic-Indic digit variants (BUG-27).
+  const n = Number(toAsciiDigits(String(raw)));
   const enrolled = row['تعداد ثبت نامي تاكنون'];
   if (!Number.isFinite(n) || n === 0) {
     return <span className="text-slate-300" title="ظرفیت در فایل اعلام نشده">-</span>;
@@ -103,7 +105,7 @@ export function CapacityCell({ row }) {
   if (isBlank(enrolled)) {
     return <span className="block text-center tabular-nums font-bold text-slate-700" title="تعداد ثبت‌نامی در فایل اعلام نشده">{faNum(n)}</span>;
   }
-  const used = Number(String(enrolled).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0)));
+  const used = Number(toAsciiDigits(String(enrolled)));
   return (
     <span className="block text-center tabular-nums font-bold text-slate-700" title={`${faNum(used)} از ${faNum(n)}`}>
       {faNum(used)}<span className="text-slate-400">/</span>{faNum(n)}

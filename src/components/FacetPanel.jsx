@@ -128,6 +128,16 @@ export default function FacetPanel({
     </>
   );
 
+  if (variant === 'header') {
+    // Rendered inside VirtualTable's portaled wrapper, which owns the
+    // positioning, border and shadow - here it is just the dialog box.
+    return (
+      <div className="flex flex-col overflow-hidden" role="presentation">
+        {body}
+      </div>
+    );
+  }
+
   if (!isDropdown) {
     return (
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">

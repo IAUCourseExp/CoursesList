@@ -2,7 +2,7 @@
 // header - impossible on a phone, where the header is hidden. This sheet gives every
 // one of those controls a proper home, in the order people actually need them.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import {
   CloseIcon, SortIcon, FilterIcon, ColumnsIcon, SlidersIcon, SparkIcon,
   TelegramIcon, DownloadIcon, HelpIcon, HeartIcon, LinkIcon, GridIcon, ListIcon,
@@ -12,7 +12,7 @@ import { Chip, Section, Segmented } from './Bits.jsx';
 import FacetPanel from './FacetPanel.jsx';
 import ColumnPicker from './ColumnPicker.jsx';
 import { faNum } from '../lib/format.js';
-import { useScrollLock } from '../lib/hooks.js';
+import { useScrollLock, useDialogFocus } from '../lib/hooks.js';
 import {
   labelOf, COLUMN_GROUPS, QUICK_FILTER_COLUMNS, QUICK_SORT_OPTIONS, isPhantom, pickColumns, canonical,
 } from '../lib/columns.js';
@@ -51,9 +51,13 @@ export default function FilterSheet({
   totalCount,
   csvUrl,
   filename,
+  openFacetPanel = null, // Unified from App
+  setOpenFacetPanel = () => {},
 }) {
   useScrollLock(true);
-  const [openValueList, setOpenValueList] = useState(null);
+  const containerRef = useRef(null);
+  useDialogFocus(containerRef);
+  // Removed local openValueList - now uses unified openFacetPanel from App
 
   const quickColumns = pickColumns(allColumns, QUICK_FILTER_COLUMNS);
   const realColumns = allColumns.filter((c) => !isPhantom(c));
@@ -63,11 +67,8 @@ export default function FilterSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  // Escape handling lives in App's single overlay-stack listener (BUG-10/13);
+  // no per-component window handler here, so only the topmost overlay closes.
 
   const toggleValue = (col, value) => {
     const current = filters[col] || [];
@@ -81,7 +82,11 @@ export default function FilterSheet({
     <div className="fixed inset-0 z-[80] flex items-end justify-center" role="dialog" aria-modal="true" aria-label="فیلترها و تنظیمات">
       <button type="button" aria-label="بستن" onClick={onClose} className="absolute inset-0 bg-slate-900/45 backdrop-blur-sm" />
 
-      <div className={`relative flex max-h-[90dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-slate-50 shadow-2xl animate-sheet-up ${isMobile ? '' : 'max-w-2xl sm:max-h-[88vh] sm:rounded-3xl'}`}>
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        className={`relative flex sheet-max w-full flex-col overflow-hidden rounded-t-3xl bg-slate-50 shadow-2xl animate-sheet-up outline-none ${isMobile ? '' : 'max-w-2xl sm:max-h-[88vh] sm:rounded-3xl'}`}
+      >
         <header className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-3">
           <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white">
             <SlidersIcon className="size-4.5" />
@@ -133,14 +138,14 @@ export default function FilterSheet({
               {quickColumns.map((col) => {
                 const values = (facets[col] || []).slice(0, QUICK_VALUES_PER_COLUMN);
                 const selected = filters[col] || [];
-                const expanded = openValueList === col;
+                const expanded = openFacetPanel?.column === col;
                 return (
                   <div key={col}>
                     <div className="mb-1.5 flex items-center justify-between gap-2">
                       <p className="text-[12px] font-extrabold text-slate-600">{labelOf(col)}</p>
                       <button
                         type="button"
-                        onClick={() => { setOpenValueList(expanded ? null : col); if (!expanded) onEnsureFacets(col); }}
+                        onClick={() => { setOpenFacetPanel(expanded ? null : { column: col, variant: 'inline' }); if (!expanded) onEnsureFacets(col); }}
                         className="rounded-lg px-2 py-1 text-[11.5px] font-bold text-blue-600 transition-colors hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60"
                       >
                         {expanded ? 'بستن' : 'همهٔ مقادیر'}
@@ -156,7 +161,7 @@ export default function FilterSheet({
                         selected={selected}
                         onToggle={(v) => toggleValue(col, v)}
                         onClear={() => onFilterChange(col, null)}
-                        onClose={() => setOpenValueList(null)}
+                        onClose={() => setOpenFacetPanel(null)}
                       />
                     ) : values.length === 0 ? (
                       <p className="rounded-lg bg-slate-100/70 px-3 py-2 text-[11.5px] text-slate-400">در حال بارگذاری مقادیر…</p>
@@ -175,7 +180,7 @@ export default function FilterSheet({
                           </Chip>
                         ))}
                         {(facets[col] || []).length > QUICK_VALUES_PER_COLUMN && (
-                          <Chip tone="slate" onClick={() => { setOpenValueList(col); onEnsureFacets(col); }}>
+                          <Chip tone="slate" onClick={() => { setOpenFacetPanel({ column: col, variant: 'inline' }); onEnsureFacets(col); }}>
                             + {faNum((facets[col] || []).length - QUICK_VALUES_PER_COLUMN)} مورد دیگر
                           </Chip>
                         )}
@@ -200,13 +205,13 @@ export default function FilterSheet({
                     <div className="flex flex-wrap gap-1.5">
                       {cols.map((col) => {
                         const count = filters[col]?.length || 0;
-                        const expanded = openValueList === col;
+                        const expanded = openFacetPanel?.column === col;
                         return (
                           <Chip
                             key={col}
                             tone={count ? 'blue' : 'slate'}
                             active={!!count}
-                            onClick={() => { setOpenValueList(expanded ? null : col); if (!expanded) onEnsureFacets(col); }}
+                            onClick={() => { setOpenFacetPanel(expanded ? null : { column: col, variant: 'inline' }); if (!expanded) onEnsureFacets(col); }}
                             title={`فیلتر ${col}`}
                           >
                             <FilterIcon className="size-3.5" />
@@ -216,17 +221,17 @@ export default function FilterSheet({
                         );
                       })}
                     </div>
-                    {openValueList && cols.includes(openValueList) && (
+                    {openFacetPanel && cols.includes(openFacetPanel.column) && (
                       <div className="mt-2">
                         <FacetPanel
                           variant="inline"
-                          column={openValueList}
-                          values={facets[openValueList] || []}
-                          loading={facetsLoading === openValueList}
-                          selected={filters[openValueList] || []}
-                          onToggle={(v) => toggleValue(openValueList, v)}
-                          onClear={() => onFilterChange(openValueList, null)}
-                          onClose={() => setOpenValueList(null)}
+                          column={openFacetPanel.column}
+                          values={facets[openFacetPanel.column] || []}
+                          loading={facetsLoading === openFacetPanel.column}
+                          selected={filters[openFacetPanel.column] || []}
+                          onToggle={(v) => toggleValue(openFacetPanel.column, v)}
+                          onClear={() => onFilterChange(openFacetPanel.column, null)}
+                          onClose={() => setOpenFacetPanel(null)}
                         />
                       </div>
                     )}
